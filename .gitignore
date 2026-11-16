@@ -1,0 +1,10 @@
+# Local scratch and planning artifacts are never committed.
+thoughts/
+ledger/
+.planning/
+*.bak
+*.tmp
+.DS_Store
+
+# Runtime caches (produced by the token poller on user machines).
+.usage-cache/

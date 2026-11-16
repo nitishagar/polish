@@ -1,0 +1,35 @@
+# Polish starship preset. Symlinked or copied to ~/.config/starship.toml
+# by the installer. Prompt modules read pre-aggregated ~/.usage/*.json only;
+# log parsing never happens in prompt render.
+format = "$directory$git_branch$git_status$polish_tokens$polish_agent$character"
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+
+[directory]
+truncation_length = 3
+truncate_to_repo = true
+
+[git_branch]
+symbol = "🌱 "
+
+[git_status]
+ahead = "⇡${count}"
+behind = "⇣${count}"
+
+# Day cost + tokens, written by polish-tokens-collect.
+[custom.polish_tokens]
+command = "polish tokens --prompt"
+when = "test -f ~/.usage/polish/daily.json"
+symbol = "⚡ "
+format = "[$symbol$output]($style) "
+style = "bold yellow"
+
+# Active agent CLI in this directory (session-aware).
+[custom.polish_agent]
+command = "polish agents --prompt"
+when = "polish agents --prompt-quiet"
+symbol = "🤖 "
+format = "[$symbol$output]($style) "
+style = "bold cyan"

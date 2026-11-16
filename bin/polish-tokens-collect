@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# polish-tokens-collect: background usage poller (Design 1: log-tail aggregator).
+# Scans per-CLI logs with per-file cursor offsets and writes pre-aggregated
+# JSON to ~/.usage/polish/. Safe to run from a systemd timer every 60-300s.
+# NEVER runs in prompt render; prompt reads the JSON only.
+set -u
+USAGE_DIR="${HOME}/.usage/polish"
+mkdir -p "$USAGE_DIR"
+echo "polish-tokens-collect: full multi-CLI parsing not implemented yet" >&2
+echo "known sources: claude(~/.claude/projects), muse(~/.local/share/muse/sessions), opencode(opencode.db), pi(~/.pi/agent/sessions), codex(gated: not installed)" >&2
+exit 1

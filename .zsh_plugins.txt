@@ -1,0 +1,8 @@
+# Polish antidote bundle. Regenerated into ${ZDOTDIR:-~}/.zsh_plugins.zsh
+# only when this file is newer (static-bundle pattern).
+getantidote/use-omz
+ohmyzsh/ohmyzsh path:plugins/git
+ohmyzsh/ohmyzsh path:plugins/extract
+ohmyzsh/ohmyzsh path:plugins/tmux
+zsh-users/zsh-autosuggestions kind:defer
+zsh-users/zsh-syntax-highlighting kind:defer
