@@ -1,7 +1,7 @@
 # Polish starship preset. Symlinked or copied to ~/.config/starship.toml
 # by the installer. Prompt modules read pre-aggregated ~/.usage/*.json only;
 # log parsing never happens in prompt render.
-format = "$directory$git_branch$git_status$polish_tokens$polish_agent$character"
+format = "$directory$git_branch$git_status$polish_tokens$polish_context$polish_agent$character"
 
 [character]
 success_symbol = "[❯](bold green)"
@@ -26,10 +26,20 @@ symbol = "⚡ "
 format = "[$symbol$output]($style) "
 style = "bold yellow"
 
-# Active agent CLI in this directory (session-aware).
+# Active agent CLI in this directory (session-aware). Single detection per
+# render: the command exits nonzero when silent, so no separate `when` scan.
 [custom.polish_agent]
-command = "polish agents --prompt"
-when = "polish agents --prompt-quiet"
+command = "out=$(polish agents --prompt); [ -n \"$out\" ] && printf '%s' \"$out\""
 symbol = "🤖 "
 format = "[$symbol$output]($style) "
 style = "bold cyan"
+
+# Context burn % from the same daily.json cache. Cached-read-only: one JSON
+# read, never log I/O; missing/unreadable cache exits nonzero (hidden).
+# Bad POLISH_CONTEXT_WINDOW falls back to 200000, matching polish_context_pct.
+[custom.polish_context]
+command = "python3 -c 'import json,os;d=json.load(open(os.path.expanduser(\"~/.usage/polish/daily.json\")));t=d.get(\"context_tokens\",d.get(\"total_tokens\",0));t=t if isinstance(t,(int,float)) and not isinstance(t,bool) else 0;w=d.get(\"context_window\",os.environ.get(\"POLISH_CONTEXT_WINDOW\",\"200000\"));w=int(\"\".join(c for c in str(w) if c.isdigit()) or 200000) or 200000;print(\"%d%%\"%(100*int(t)/w))' 2>/dev/null"
+when = "test -f ~/.usage/polish/daily.json"
+symbol = "🧠 "
+format = "[$symbol$output]($style) "
+style = "bold magenta"

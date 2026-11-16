@@ -7,8 +7,8 @@ with token-usage insights in your prompt, sane window/pane switching, and a
 clean theme. No framework bloat: static plugin bundle, deferred loading,
 `compinit` exactly once.
 
-**Status:** early scaffold. `polish doctor` works today; agent plugins, the
-token poller, and multiplexer helpers are landing incrementally.
+**Status:** implemented and tested (`./tests/run.sh` green). All five agent
+integrations ship; Codex paths stay gated until the CLI is installed.
 
 ## Why not oh-my-zsh?
 
@@ -53,10 +53,14 @@ Docs: <https://nitishagar.github.io/polish/> (`docs/` in this repo).
 - `starship.toml` — prompt preset
 - `bin/polish` — CLI (`doctor`, `agents`, `tokens`, `mux`, `theme`)
 - `bin/polish-tokens-collect` — background usage poller (writes `~/.usage/`)
+- `lib/prices.json` — versioned per-model rates (overridable per machine)
 - `plugins/` — `polish-ai`, `polish-tokens`, `polish-mux` zsh plugins
-- `installer/install.sh` — installer (`--shell/--from/--prefix/--uninstall`)
+- `mux/tmux.conf` — prefix-free Alt-hjkl tmux config (link it yourself)
+- `installer/install.sh` — installer
+  (`--shell/--from/--prefix/--share/--timer/--uninstall`)
+- `installer/polish-tokens.{service,timer}` — systemd user timer for the poller
 - `docs/` — static GitHub Pages site + install script
-- `tests/run.sh` — test runner (no dependencies)
+- `tests/run.sh` + `tests/test-tokens.sh` — test suites (no dependencies)
 
 ## License
 

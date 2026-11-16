@@ -1,0 +1,10 @@
+[Unit]
+Description=Polish token usage collector (aggregates CLI logs to ~/.usage/polish)
+Documentation=https://github.com/nitishagar/polish
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/polish-tokens-collect
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

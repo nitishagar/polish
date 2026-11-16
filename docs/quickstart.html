@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quickstart — Polish</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.6}
+pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:8px}
+nav a{margin-right:1rem}
+</style>
+</head>
+<body>
+<nav><a href="index.html">Home</a> <a href="quickstart.html">Quickstart</a> <a href="agents.html">Agents</a> <a href="tokens.html">Tokens</a> <a href="multiplex.html">Windows</a> <a href="self-host.html">Self-host</a> <a href="uninstall.html">Uninstall</a></nav>
+<h1>Quickstart</h1>
+<h2>1. Prerequisites</h2>
+<p>Required: <code>zsh</code>, <code>git</code>, <code>curl</code>. Everything else is
+optional and degrades gracefully when missing: <code>starship</code>,
+<code>antidote</code>, <code>fnm</code>, <code>tmux</code>/<code>zellij</code>/<code>wezterm</code>,
+and any of the agent CLIs (<code>claude</code>, <code>muse</code>,
+<code>codex</code>, <code>opencode</code>, <code>pi</code>). The installer does
+not install these for you (roadmap); install the ones you want first.</p>
+<h2>2. Install</h2>
+<pre>curl -fsSL https://nitishagar.github.io/polish/install.sh | bash
+exec zsh
+polish doctor</pre>
+<p>From a clone instead:</p>
+<pre>./installer/install.sh --shell zsh
+exec zsh
+polish doctor</pre>
+<p>The installer copies the repo to <code>~/.local/share/polish</code>, symlinks
+<code>polish</code> and <code>polish-tokens-collect</code> into
+<code>~/.local/bin</code>, and appends a marked hook block to your rc file
+(backing it up to <code>~/.zshrc.polish-bak</code>). See
+<a href="self-host.html">Self-host</a> for <code>--from</code>,
+<code>--prefix</code>, <code>--share</code>, and offline options.</p>
+<h2>3. Verify</h2>
+<pre>polish doctor     # prerequisites, agent CLIs, token cache
+polish agents     # agent CLI status table with versions
+polish theme      # starship version + config path status</pre>
+<h2>4. Finish the prompt</h2>
+<p>The installer already deploys the Starship preset to
+<code>~/.config/starship.toml</code> (backing up any existing config to
+<code>starship.toml.polish-bak</code>; symlinked configs are left alone).
+Only the tmux keybinds stay manual:</p>
+<pre># tmux keybinds (prefix-free Alt-hjkl); or source it per-server
+ln -sf ~/.local/share/polish/mux/tmux.conf ~/.tmux.conf</pre>
+<p>Then start the token poller (see <a href="tokens.html">Tokens</a>) and pick a
+multiplexer setup (see <a href="multiplex.html">Windows</a>).</p>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents — Polish</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.6}
+pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:8px}
+nav a{margin-right:1rem}
+</style>
+</head>
+<body>
+<nav><a href="index.html">Home</a> <a href="quickstart.html">Quickstart</a> <a href="agents.html">Agents</a> <a href="tokens.html">Tokens</a> <a href="multiplex.html">Windows</a> <a href="self-host.html">Self-host</a> <a href="uninstall.html">Uninstall</a></nav>
+<h1>Agents</h1>
+<p>Polish integrates five agent CLIs: <code>claude</code>, <code>muse</code>,
+<code>codex</code>, <code>opencode</code>, and <code>pi</code>. Missing CLIs are
+always a quiet hint, never a <code>command not found</code> error.</p>
+<h2>Status</h2>
+<pre>polish agents         # same as: polish agents status
+polish agents status  # AGENT / VERSION / LOCATION table</pre>
+<p><code>codex</code> shows <code>gated (not installed)</code> when absent; the
+others show <code>not installed</code>. Versions are each CLI's first
+<code>--version</code> line, or <code>(unknown version)</code>.</p>
+<h2>Prompt integration</h2>
+<pre>polish agents --prompt        # one token when a session matches $PWD, else silent
+polish agents --prompt-quiet  # exit 0 iff --prompt would emit (no output)</pre>
+<p>First match wins, in this order: <code>claude</code>, <code>muse</code>,
+<code>opencode</code>, <code>pi</code>, <code>codex</code>. Detection is
+read-only: <code>~/.claude/projects/&lt;pwd&gt;/*.jsonl</code>, recent
+<code>session.jsonl</code> files with <code>"cwd":"$PWD"</code> under
+<code>~/.local/share/muse/sessions</code>, a read-only query of the opencode
+session/project tables, <code>~/.pi/agent/sessions/--&lt;pwd&gt;--/*.jsonl</code>
+(session files only — <code>auth.json</code> is never read), and
+<code>~/.codex/sessions</code> lines matching a cwd-like field
+(<code>"cwd"|"directory"|"workdir"|"workspace"|"root":"$PWD"</code> —
+incidental path mentions never match). Codex is gated: it is consulted only
+when the <code>codex</code> CLI is installed. The Starship preset runs one
+<code>polish agents --prompt</code> per render for the
+<code>polish_agent</code> module (empty output hides it).</p>
+<h2>Session helpers (<code>polish-ai</code> plugin)</h2>
+<pre>polish_agents        # one line per CLI: path or "not installed"
+claude_continue      # claude --continue
+claude_resume [id]   # claude --resume [id]
+muse_continue        # muse resume --last
+muse_resume [ref]    # muse resume [ref] (picker when bare)
+opencode_continue    # opencode run --continue
+opencode_resume &lt;id&gt; [msg...]  # opencode run --session (id required)
+pi_continue          # pi --continue
+pi_resume [id]       # pi --session [id], or pi --resume picker when bare</pre>
+<h2>Aliases</h2>
+<pre>pcl  pcr   # claude_continue / claude_resume
+pml  pmr   # muse_continue / muse_resume
+poc  por   # opencode_continue / opencode_resume
+ppi  ppr   # pi_continue / pi_resume</pre>
+<p>Every helper funnels through a guard that prints
+<code>&lt;cli&gt;: not installed</code> and returns 1 when the CLI is missing,
+so the aliases are safe to invoke anywhere. Per-agent Codex launchers are
+roadmap (Codex paths stay gated until the CLI exists).</p>
+</body>
+</html>

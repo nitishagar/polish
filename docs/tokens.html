@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokens — Polish</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.6}
+pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:8px}
+nav a{margin-right:1rem}
+</style>
+</head>
+<body>
+<nav><a href="index.html">Home</a> <a href="quickstart.html">Quickstart</a> <a href="agents.html">Agents</a> <a href="tokens.html">Tokens</a> <a href="multiplex.html">Windows</a> <a href="self-host.html">Self-host</a> <a href="uninstall.html">Uninstall</a></nav>
+<h1>Tokens</h1>
+<p>Design: a background poller aggregates per-CLI usage into
+<code>~/.usage/polish/</code>; the prompt reads that JSON only and never parses
+logs. Without the cache, <code>polish tokens</code> says
+<code>no token data yet (run: polish-tokens-collect)</code>.</p>
+<h2>Collector</h2>
+<pre>polish-tokens-collect          # tail logs, update ~/.usage/polish/*.json
+polish-tokens-collect --help   # usage (also: -h)</pre>
+<p>Sources (all under <code>$HOME</code> unless overridden):</p>
+<ul>
+<li><code>claude</code> — <code>~/.claude/projects/**/*.jsonl</code>,
+<code>message.usage</code>, deduped per message id</li>
+<li><code>muse</code> — <code>~/.local/share/muse/sessions/**/session.jsonl</code>,
+<code>model_completed</code> events only</li>
+<li><code>opencode</code> — <code>~/.local/share/opencode/opencode.db</code>,
+<code>message</code> rows read-only (the <code>part</code> table is never read;
+no WAL/SHM/journal files are created)</li>
+<li><code>pi</code> — <code>~/.pi/agent/sessions/**/*.jsonl</code>, assistant
+<code>message.usage</code> (<code>auth.json</code> is never touched)</li>
+<li><code>codex</code> — <code>${CODEX_HOME:-~/.codex}/sessions/**</code>,
+best-effort usage shapes; skipped silently when not installed</li>
+</ul>
+<p>Outputs in <code>${POLISH_USAGE_DIR:-~/.usage/polish}</code>:
+<code>daily.json</code> (<code>date</code>, <code>total_tokens</code>,
+<code>total_cost_usd</code>, <code>by_cli</code>, <code>prompt</code>),
+per-CLI <code>&lt;cli&gt;.json</code> files (daily totals plus per-model
+breakdown, <code>unknown_lines</code>, <code>deduped_lines</code>), and
+<code>cursors.json</code> (per-file size/mtime/offset, so re-runs are
+incremental; <code>daily.json</code> is rebuilt from today's per-CLI docs and
+resets on a new day). Env overrides: <code>POLISH_USAGE_DIR</code>,
+<code>POLISH_PRICES_FILE</code>, <code>POLISH_PRICES_OVERRIDE</code>,
+<code>POLISH_TODAY</code> (YYYY-MM-DD), <code>CODEX_HOME</code>.</p>
+<h2>Scheduling</h2>
+<p>Run the collector every 60–300s. The installer ships a systemd user timer
+for this — pass <code>--timer</code> at install time
+(<code>installer/polish-tokens.{service,timer}</code>, every 2 minutes).
+Without systemd, use cron:
+<code>*/2 * * * * polish-tokens-collect</code>.</p>
+<p>First run imports existing history into today's totals (later runs are
+incremental via <code>cursors.json</code>), so day one legitimately shows
+lifetime-to-date numbers; subsequent days are true deltas.</p>
+<h2>Prices</h2>
+<p>Rates live in the versioned map <code>lib/prices.json</code> (USD per 1M
+tokens; estimates only). Lookup tries the exact model name, then strips
+trailing <code>-segments</code>, then strips a <code>provider/</code> prefix,
+then falls back to <code>default</code>. Override entries without editing that
+file via <code>~/.usage/polish/prices.override.json</code> (same shape,
+deep-merged over the base; or point <code>POLISH_PRICES_OVERRIDE</code
+> elsewhere). Pi/opencode lines that carry a reported cost use it directly.</p>
+<h2>Viewing</h2>
+<pre>polish tokens          # same as: polish tokens status
+polish tokens status   # pretty day table (CLI / TOKENS / COST + TOTAL)
+polish tokens --prompt # cached prompt string only, e.g. "$1.23 | 45K tok"</pre>
+<p>The status table merges per-CLI files for any CLI missing from
+<code>daily.json</code>, and needs <code>python3</code>. Shell helpers
+(<code>polish-tokens</code> plugin): <code>pt</code> prints
+<code>daily.json</code> (<code>polish_tokens_today</code>); <code>cx</code>
+prints a context burn gauge like <code>ctx 12% (24,567/200,000)</code>
+(<code>polish_context_pct</code>). <code>cx</code> prefers explicit
+<code>context_tokens</code>/<code>context_window</code> fields when present —
+the collector does not write them yet (roadmap) — and otherwise divides day
+cumulative <code>total_tokens</code> by <code>POLISH_CONTEXT_WINDOW</code>
+(default 200000), so it is a burn-rate gauge, not live context pressure.</p>
+<h2>Prompt modules</h2>
+<p>The Starship preset (<code>starship.toml</code>) adds
+<code>polish_tokens</code> (<code>polish tokens --prompt</code>),
+<code>polish_context</code> (one JSON read computing a <code>N%</code> from the
+same cache), and <code>polish_agent</code> (see
+<a href="agents.html">Agents</a>). Unknown flags error, e.g.
+<code>polish tokens bogus</code> prints usage and exits 1.</p>
+</body>
+</html>

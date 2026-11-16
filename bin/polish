@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 # polish: CLI for the Polish AI-first shell.
-#   polish doctor            check prerequisites and agent CLIs
-#   polish agents [--prompt] agent CLI status
-#   polish tokens [--prompt] token/cost summary (reads ~/.usage cache only)
-#   polish mux <cmd>         multiplexer helpers (tmux/zellij/wezterm)
-#   polish theme <cmd>       starship theme helpers
 set -u
 
 POLISH_DIR="${POLISH_DIR:-$HOME/.local/share/polish}"
@@ -12,7 +7,19 @@ USAGE_DIR="${HOME}/.usage/polish"
 VERSION="0.1.0"
 
 usage() {
-  sed -n '2,8p' "$0"
+  cat <<'EOF'
+polish: CLI for the Polish AI-first shell.
+  polish doctor                  check prerequisites and agent CLIs
+  polish agents [status]         agent CLI status table with versions
+  polish agents --prompt         one short token if an agent session matches $PWD, else silent
+  polish agents --prompt-quiet   exit 0 iff --prompt would emit (no output)
+  polish tokens [status]         pretty day table from ~/.usage cache only
+  polish tokens --prompt         print cached prompt string only
+  polish mux [status]            multiplexer status (tmux/zellij/wezterm)
+  polish mux detect              print tmux|zellij|wezterm|none for this shell
+  polish theme [status]          starship version + config path status
+  polish theme show|path          print the resolved starship config path
+EOF
   exit "${1:-0}"
 }
 
@@ -40,37 +47,335 @@ cmd_doctor() {
   fi
 }
 
-cmd_agents() {
-  if [ "${1:-}" = "--prompt" ]; then
-    # Compact single-token status for starship; quiet when nothing relevant.
-    exit 0
-  fi
-  if [ "${1:-}" = "--prompt-quiet" ]; then
-    exit 1
-  fi
+# --- agents ---------------------------------------------------------------
+# First line of `<cli> --version`, empty when unavailable.
+_agent_version() {
+  "$1" --version 2>/dev/null | head -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+_agents_table() {
+  printf '%-9s %-32s %s\n' "AGENT" "VERSION" "LOCATION"
+  local c ver loc
   for c in claude muse codex opencode pi; do
-    if have "$c"; then printf '%-9s %s\n' "$c" "$(command -v "$c")"; else printf '%-9s %s\n' "$c" "not installed"; fi
+    if have "$c"; then
+      ver="$(_agent_version "$c")"
+      [ -n "$ver" ] || ver="(unknown version)"
+      loc="$(command -v "$c")"
+      printf '%-9s %-32s %s\n' "$c" "$ver" "$loc"
+    elif [ "$c" = "codex" ]; then
+      printf '%-9s %-32s %s\n' "$c" "-" "gated (not installed)"
+    else
+      printf '%-9s %-32s %s\n' "$c" "-" "not installed"
+    fi
   done
 }
 
-cmd_tokens() {
-  if [ "${1:-}" = "--prompt" ]; then
-    # Prompt path: read pre-aggregated cache only, never parse logs here.
-    if [ -f "$USAGE_DIR/daily.json" ]; then
-      python3 -c "import json;print(json.load(open('$USAGE_DIR/daily.json')).get('prompt',''))" 2>/dev/null || true
-    fi
-    exit 0
+# Does an opencode session/project row match $PWD? Read-only query against the
+# session + project_directory tables only; never touches credential tables.
+_opencode_match_pwd() {
+  local pwd="$1"
+  local db="${OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
+  [ -f "$db" ] || return 1
+  have python3 || return 1
+  _POLISH_PWD_MATCH="$pwd" _POLISH_OPENCODE_DB="$db" python3 - <<'PYEOF' 2>/dev/null
+import os, sqlite3, sys
+pwd = os.environ.get("_POLISH_PWD_MATCH", "")
+db = os.environ.get("_POLISH_OPENCODE_DB", "")
+try:
+    con = sqlite3.connect("file:%s?mode=ro" % db.replace("%", "%25"), uri=True, timeout=2)
+    cur = con.cursor()
+    for tbl, col in (("session", "directory"), ("project_directory", "directory")):
+        try:
+            cur.execute("select 1 from %s where %s=? limit 1" % (tbl, col), (pwd,))
+        except sqlite3.Error:
+            continue
+        if cur.fetchone():
+            sys.exit(0)
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+PYEOF
+}
+
+# Print one short token when an agent session matches $PWD; silent otherwise.
+# First match wins (claude, muse, opencode, pi, codex). Codex is gated: it is
+# only consulted when the codex CLI is installed.
+_agents_prompt_token() {
+  local pwd="${PWD:-$(pwd)}"
+  local enc ptrim
+  enc="$(printf '%s' "$pwd" | tr '/' '-')"
+  ptrim="$(printf '%s' "$pwd" | tr '/' '-' | sed 's/^-//')"
+
+  # claude: ~/.claude/projects/<pwd with slashes as dashes>/*.jsonl
+  local cdir="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}/$enc"
+  if [ -d "$cdir" ] && ls "$cdir"/*.jsonl >/dev/null 2>&1; then
+    echo "claude"
+    return 0
   fi
-  if [ -f "$USAGE_DIR/daily.json" ]; then
-    cat "$USAGE_DIR/daily.json"
-  else
+
+  # muse: recent session.jsonl files embed "cwd":"<pwd>" in route_facts.
+  local mroot="${MUSE_SESSIONS_DIR:-$HOME/.local/share/muse/sessions}"
+  if [ -d "$mroot" ]; then
+    local f found=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if grep -q -m1 -F "\"cwd\":\"$pwd\"" "$f" 2>/dev/null; then found="muse"; break; fi
+    done <<EOF
+$(find "$mroot" -name 'session.jsonl' -mtime -30 2>/dev/null | head -50)
+EOF
+    if [ -n "$found" ]; then echo "$found"; return 0; fi
+  fi
+
+  # opencode: session/project rows keyed by working directory.
+  if _opencode_match_pwd "$pwd"; then
+    echo "opencode"
+    return 0
+  fi
+
+  # pi: ~/.pi/agent/sessions/--<pwd with slashes as dashes>--/*.jsonl
+  # (session files only; auth.json is never read).
+  local pdir="${PI_SESSIONS_DIR:-$HOME/.pi/agent/sessions}/--${ptrim}--"
+  if [ -d "$pdir" ] && ls "$pdir"/*.jsonl >/dev/null 2>&1; then
+    echo "pi"
+    return 0
+  fi
+
+  # codex: gated behind an installed-check. Match only cwd-like JSON fields
+  # ("cwd":"<pwd>", "directory":"<pwd>", ...) so an incidental path mention
+  # in transcript text never triggers a false positive.
+  if have codex; then
+    local xroot="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+    if [ -d "$xroot" ]; then
+      local xf field
+      while IFS= read -r xf; do
+        [ -n "$xf" ] || continue
+        for field in cwd directory workdir workspace root; do
+          if grep -q -m1 -F "\"$field\":\"$pwd\"" "$xf" 2>/dev/null; then
+            echo "codex"
+            return 0
+          fi
+        done
+      done <<EOF
+$(find "$xroot" -type f -name '*.jsonl' -mtime -30 2>/dev/null | head -20)
+EOF
+    fi
+  fi
+
+  return 1
+}
+
+cmd_agents() {
+  case "${1:-}" in
+    --prompt)
+      # Compact single-token status for starship; quiet when nothing relevant.
+      _agents_prompt_token || true
+      exit 0
+      ;;
+    --prompt-quiet)
+      if _agents_prompt_token >/dev/null 2>&1; then exit 0; else exit 1; fi
+      ;;
+    ""|status)
+      _agents_table
+      ;;
+    *)
+      echo "polish agents: unknown option: $1" >&2
+      echo "usage: polish agents [status|--prompt|--prompt-quiet]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --- tokens ---------------------------------------------------------------
+# Prompt path: read the pre-aggregated cache only, never parse logs here.
+_tokens_prompt() {
+  if [ ! -f "$USAGE_DIR/daily.json" ]; then exit 0; fi
+  have python3 || exit 0
+  _POLISH_DAILY="$USAGE_DIR/daily.json" python3 - <<'PYEOF' 2>/dev/null
+import json, os
+try:
+    with open(os.environ["_POLISH_DAILY"]) as f:
+        d = json.load(f)
+    s = d.get("prompt", "")
+    if s:
+        print(s)
+except Exception:
+    pass
+PYEOF
+  exit 0
+}
+
+# Pretty day table from daily.json merged with per-CLI json files.
+_tokens_table() {
+  if [ ! -f "$USAGE_DIR/daily.json" ]; then
     echo "no token data yet (run: polish-tokens-collect)" >&2
     exit 1
   fi
+  if ! have python3; then
+    echo "polish tokens: python3 is required" >&2
+    exit 1
+  fi
+  _POLISH_USAGE_DIR="$USAGE_DIR" python3 - <<'PYEOF'
+import json, os, sys
+udir = os.environ["_POLISH_USAGE_DIR"]
+try:
+    with open(os.path.join(udir, "daily.json")) as f:
+        d = json.load(f)
+except Exception as e:
+    sys.stderr.write("token cache unreadable: daily.json (%s)\n" % e)
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.stderr.write("token cache unreadable: daily.json is not an object\n")
+    sys.exit(1)
+
+def num(v):
+    return v if isinstance(v, (int, float)) else 0
+
+def cli_stats(obj):
+    # Accepts both daily.json by_cli rows ({tokens, cost_usd}) and per-CLI
+    # files ({total_tokens, total_cost_usd, input_tokens, ...}).
+    if not isinstance(obj, dict):
+        return (0, 0.0)
+    tok = obj.get("tokens", obj.get("total_tokens"))
+    if tok is None:
+        tok = num(obj.get("input_tokens")) + num(obj.get("output_tokens")) \
+            + num(obj.get("cache_read_tokens", obj.get("cache_read"))) \
+            + num(obj.get("cache_write_tokens", obj.get("cache_write")))
+    cost = obj.get("cost_usd", obj.get("cost",
+              obj.get("total_cost_usd", obj.get("total_cost", 0))))
+    return (num(tok), float(num(cost)))
+
+by_cli = d.get("by_cli", {}) or {}
+if not isinstance(by_cli, dict):
+    by_cli = {}
+# Merge per-CLI cache files for CLIs missing from daily.json.
+for cli in ("claude", "muse", "opencode", "pi", "codex"):
+    if cli in by_cli:
+        continue
+    p = os.path.join(udir, cli + ".json")
+    if not os.path.isfile(p):
+        continue
+    try:
+        with open(p) as f:
+            obj = json.load(f)
+    except Exception:
+        continue
+    t, c = cli_stats(obj)
+    if t or c:
+        by_cli[cli] = {"tokens": t, "cost": c}
+
+def money(c):
+    if c and abs(c) < 0.01:
+        return "$%.4f" % c
+    return "$%.2f" % c
+
+day = d.get("date", "today")
+print("day: %s" % day)
+print("%-9s %12s %10s" % ("CLI", "TOKENS", "COST"))
+total_t, total_c = 0, 0.0
+for cli in ("claude", "muse", "opencode", "pi", "codex"):
+    if cli not in by_cli:
+        continue
+    t, c = cli_stats(by_cli[cli])
+    total_t += t
+    total_c += c
+    print("%-9s %12s %10s" % (cli, "%d" % t, money(c)))
+if not by_cli:
+    t, c = cli_stats(d)
+    total_t, total_c = t, c
+print("%-9s %12s %10s" % ("TOTAL", "%d" % total_t, money(total_c)))
+PYEOF
 }
 
-cmd_mux() { echo "polish mux: not implemented yet" >&2; exit 1; }
-cmd_theme() { echo "polish theme: not implemented yet" >&2; exit 1; }
+cmd_tokens() {
+  case "${1:-}" in
+    --prompt) _tokens_prompt;;
+    ""|status) _tokens_table;;
+    *)
+      echo "polish tokens: unknown option: $1" >&2
+      echo "usage: polish tokens [status|--prompt]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --- mux ------------------------------------------------------------------
+_mux_detect() {
+  if [ -n "${TMUX:-}" ]; then echo "tmux"
+  elif [ -n "${ZELLIJ:-}" ]; then echo "zellij"
+  elif [ -n "${WEZTERM_PANE:-}" ] || [ -n "${WEZTERM_EXECUTABLE:-}" ]; then echo "wezterm"
+  else echo "none"
+  fi
+}
+
+_mux_status() {
+  printf '%-9s %-18s %s\n' "MUX" "VERSION" "STATUS"
+  local m ver active
+  for m in tmux zellij wezterm; do
+    ver="-"
+    active=""
+    case "$m" in
+      tmux) [ -n "${TMUX:-}" ] && active="active (in session)";;
+      zellij) [ -n "${ZELLIJ:-}" ] && active="active (in session)";;
+      wezterm) { [ -n "${WEZTERM_PANE:-}" ] || [ -n "${WEZTERM_EXECUTABLE:-}" ]; } && active="active (in session)";;
+    esac
+    if have "$m"; then
+      case "$m" in
+        tmux) ver="$(tmux -V 2>/dev/null | head -n 1)";;  # tmux has no --version
+        *) ver="$("$m" --version 2>/dev/null | head -n 1)";;
+      esac
+      [ -n "$ver" ] || ver="(unknown version)"
+      [ -n "$active" ] || active="installed"
+    else
+      [ -n "$active" ] || active="not installed"
+    fi
+    printf '%-9s %-18s %s\n' "$m" "$ver" "$active"
+  done
+  echo "current: $(_mux_detect)"
+}
+
+cmd_mux() {
+  case "${1:-}" in
+    ""|status) _mux_status;;
+    detect) _mux_detect;;
+    *)
+      echo "polish mux: unknown option: $1" >&2
+      echo "usage: polish mux [status|detect]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --- theme ----------------------------------------------------------------
+_theme_path() {
+  printf '%s\n' "${STARSHIP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml}"
+}
+
+_theme_status() {
+  local cfg preset ver
+  cfg="$(_theme_path)"
+  preset="$POLISH_DIR/starship.toml"
+  if have starship; then
+    ver="$(starship --version 2>/dev/null | head -n 1)"
+    [ -n "$ver" ] || ver="(unknown version)"
+  else
+    ver="not installed"
+  fi
+  echo "starship: $ver"
+  if [ -f "$cfg" ]; then echo "config:   $cfg (exists)"; else echo "config:   $cfg (missing)"; fi
+  if [ -f "$preset" ]; then echo "preset:   $preset (exists)"; else echo "preset:   $preset (missing)"; fi
+}
+
+cmd_theme() {
+  case "${1:-}" in
+    ""|status) _theme_status;;
+    show|path) _theme_path;;
+    *)
+      echo "polish theme: unknown option: $1" >&2
+      echo "usage: polish theme [status|show|path]" >&2
+      exit 1
+      ;;
+  esac
+}
 
 case "${1:-}" in
   ""|-h|--help) usage 0;;

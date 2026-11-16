@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Self-host — Polish</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.6}
+pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:8px}
+nav a{margin-right:1rem}
+</style>
+</head>
+<body>
+<nav><a href="index.html">Home</a> <a href="quickstart.html">Quickstart</a> <a href="agents.html">Agents</a> <a href="tokens.html">Tokens</a> <a href="multiplex.html">Windows</a> <a href="self-host.html">Self-host</a> <a href="uninstall.html">Uninstall</a></nav>
+<h1>Self-host</h1>
+<p>Run Polish from your own clone, fork, or mirror. All paths below are the
+installer's real flags (see <code>installer/install.sh --help</code>).</p>
+<h2>Install from a directory</h2>
+<pre>git clone https://github.com/nitishagar/polish ~/src/polish
+~/src/polish/installer/install.sh --shell zsh --from ~/src/polish</pre>
+<p>Running <code>./installer/install.sh</code> from inside a checkout uses the
+current directory automatically. <code>--from</code> also accepts a tarball
+URL, which is downloaded and must contain <code>init.zsh</code> within two
+levels:</p>
+<pre>./installer/install.sh --from https://example.com/polish.tar.gz</pre>
+<h2>Install from a fork or pinned version</h2>
+<pre>GITHUB_REPO=myorg/polish POLISH_VERSION=v0.2.0 ./installer/install.sh</pre>
+<p>Defaults: <code>GITHUB_REPO=nitishagar/polish</code>,
+<code>POLISH_VERSION=main</code>. Tagged releases also attach a tarball asset
+(see the <code>release</code> workflow); point <code>--from</code> at its URL
+to install a pinned release without git.</p>
+<h2>Custom locations</h2>
+<pre>./installer/install.sh --prefix ~/.local/bin --share ~/.local/share/polish
+./installer/install.sh --shell bash   # bash hook (PATH export) instead of zsh
+./installer/install.sh --timer        # also install+enable the token-poller timer</pre>
+<p>The shell defaults to <code>zsh</code> when <code>$SHELL</code> contains
+<code>zsh</code>, else <code>bash</code>. The zsh hook exports
+<code>POLISH_DIR</code> and sources <code>$POLISH_DIR/init.zsh</code>; the bash
+hook exports <code>POLISH_DIR</code> and prepends
+<code>$POLISH_DIR/bin</code> to <code>PATH</code>. The hook block is marked
+with <code># &gt;&gt;&gt; polish &gt;&gt;&gt;</code> /
+<code># &lt;&lt;&lt; polish &lt;&lt;&lt;</code> in <code>~/.zshrc</code> or
+<code>~/.bashrc</code>; installation is skipped if the block already exists.</p>
+<h2>Running from the checkout</h2>
+<p>You can also skip the installer: put the checkout's <code>bin/</code> on
+<code>PATH</code> and point <code>POLISH_DIR</code> at the checkout
+(<code>polish theme</code> resolves its preset from there). Override or extend
+without forking via <code>$POLISH_CUSTOM</code> (default
+<code>~/.polish-custom</code>): per-plugin overrides in
+<code>$POLISH_CUSTOM/plugins/&lt;name&gt;/</code> win over shipped plugins,
+and <code>$POLISH_CUSTOM/*.zsh</code> is sourced after them. Antidote bundles
+come from the checkout's <code>.zsh_plugins.txt</code>
+(<code>git</code>, <code>extract</code>, <code>tmux</code> from OMZ plus
+deferred autosuggestions and syntax-highlighting).</p>
+</body>
+</html>

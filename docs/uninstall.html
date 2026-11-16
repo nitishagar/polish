@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Uninstall — Polish</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.6}
+pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:8px}
+nav a{margin-right:1rem}
+</style>
+</head>
+<body>
+<nav><a href="index.html">Home</a> <a href="quickstart.html">Quickstart</a> <a href="agents.html">Agents</a> <a href="tokens.html">Tokens</a> <a href="multiplex.html">Windows</a> <a href="self-host.html">Self-host</a> <a href="uninstall.html">Uninstall</a></nav>
+<h1>Uninstall</h1>
+<pre>~/.local/share/polish/installer/install.sh --uninstall
+# or, without the checkout (same flags as install):
+curl -fsSL https://nitishagar.github.io/polish/install.sh | bash -s -- --uninstall</pre>
+<p>With a custom location, pass the same flags you installed with:</p>
+<pre>./installer/install.sh --uninstall --shell zsh --share ~/.local/share/polish</pre>
+<h2>What it removes</h2>
+<ul>
+<li>The share dir (<code>~/.local/share/polish</code> by default)</li>
+<li>The <code>polish</code> and <code>polish-tokens-collect</code> symlinks in
+<code>~/.local/bin</code> (by default)</li>
+<li>The marked hook block in your rc file — restored from
+<code>~/.zshrc.polish-bak</code> (or <code>~/.bashrc.polish-bak</code>) when
+the backup exists, else stripped in place (only when both markers are
+present; a partial block is left untouched with a warning)</li>
+<li>The systemd user timer units (<code>polish-tokens.service</code> /
+<code>polish-tokens.timer</code>), disabled first when user systemd is
+reachable</li>
+<li>Your pre-install <code>starship.toml</code>, restored from
+<code>starship.toml.polish-bak</code> when the backup exists; a config the
+installer created from nothing is removed again only if still byte-identical,
+otherwise left for you</li>
+</ul>
+<p>It is a clean no-op on an empty home: removing nothing it did not create.</p>
+<h2>What it leaves (manual cleanup)</h2>
+<ul>
+<li>Token cache: <code>~/.usage/polish/</code> — delete it if you want history gone</li>
+<li>Manual symlinks you created (<code>~/.tmux.conf</code>) and any edited
+<code>~/.config/starship.toml</code> — restore or remove them yourself</li>
+<li>Agent CLIs, <code>starship</code>, <code>antidote</code>, <code>fnm</code>,
+<code>tmux</code> — never touched (the installer does not manage them)</li>
+<li>Your rc backup (<code>*.polish-bak</code>) — kept for safety; delete when sure</li>
+</ul>
+</body>
+</html>

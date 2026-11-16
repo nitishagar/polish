@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows — Polish</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.6}
+pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:8px}
+nav a{margin-right:1rem}
+</style>
+</head>
+<body>
+<nav><a href="index.html">Home</a> <a href="quickstart.html">Quickstart</a> <a href="agents.html">Agents</a> <a href="tokens.html">Tokens</a> <a href="multiplex.html">Windows</a> <a href="self-host.html">Self-host</a> <a href="uninstall.html">Uninstall</a></nav>
+<h1>Windows</h1>
+<p>Shell-side helpers live in the <code>polish-mux</code> plugin (autostart +
+aliases + pickers); real pane switching lives in native
+tmux/zellij/wezterm keybinds on Alt-hjkl.</p>
+<h2>Status</h2>
+<pre>polish mux          # same as: polish mux status
+polish mux status   # MUX / VERSION / STATUS table + "current: ..."
+polish mux detect   # tmux | zellij | wezterm | none for this shell</pre>
+<p>Detection reads <code>$TMUX</code>, <code>$ZELLIJ</code>, and
+<code>$WEZTERM_PANE</code>/<code>$WEZTERM_EXECUTABLE</code>. Unknown options
+error with usage.</p>
+<h2>tmux config</h2>
+<p>Polish ships <code>mux/tmux.conf</code>. The installer does not deploy it
+(it never writes your tmux setup unasked), so link it yourself:</p>
+<pre>ln -sf ~/.local/share/polish/mux/tmux.conf ~/.tmux.conf
+# or per-server: tmux source-file ~/.local/share/polish/mux/tmux.conf</pre>
+<p>Keybinds (pane switching is prefix-free):</p>
+<pre>Alt-h/j/k/l        select pane left/down/up/right (no prefix)
+Alt-Shift-H/J/K/L  resize active pane 5 cells (no prefix)
+Alt-o              cycle to next pane (no prefix)
+prefix + | / -     split window horizontally / vertically
+prefix + s         session tree picker (choose-tree)
+prefix + r         reload ~/.tmux.conf (or a hint when sourced per-server)</pre>
+<p>tmux keeps sessions across shell exits but not reboots; for reboot-proof
+sessions use TPM + resurrect/continuum (commented recipe in the file). Some
+terminals send different escape codes for Alt-Shift combos — verify with
+<code>cat -v</code> if one fails to fire.</p>
+<h2>Aliases and pickers</h2>
+<pre>ta  tl  tn &lt;name&gt;   # tmux attach-or-new / list / new named session
+za  zl  zn &lt;name&gt;   # zellij attach-or-new / list / named session
+wl  wa &lt;domain&gt;    # wezterm cli list / connect (needs a mux server)
+pw [name]            # tmux: new window "name" (default "agent"), or select it
+mp [tmux|zellij]     # mux_pick session picker (fzf, else numbered list)</pre>
+<p><code>mp</code> switches the client when inside tmux, attaches when outside,
+and never nests zellij. <code>pw</code> errors outside tmux. Set
+<code>POLISH_TMUX_AUTOSTART=1</code> to attach (or start) tmux on shell login.
+zellij uses its defaults (confirm with
+<code>zellij setup --dump-config</code>); wezterm needs your own
+<code>wezterm.lua</code> mapping Alt-hjkl to
+<code>ActivatePaneDirection</code> — Polish ships no wezterm config yet
+(roadmap).</p>
+</body>
+</html>

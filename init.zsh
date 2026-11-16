@@ -42,6 +42,9 @@ done
 unset _p
 
 # --- user custom (no fork needed) -------------------------------------------
+# Null-glob for this file only: an existing-but-empty custom dir must not
+# trip zsh's default NOMATCH. (Plain command, so bash -n still parses this.)
+setopt localoptions nullglob 2>/dev/null || true
 if [ -d "$POLISH_CUSTOM" ]; then
   for _f in "$POLISH_CUSTOM"/*.zsh; do
     [ -e "$_f" ] || continue

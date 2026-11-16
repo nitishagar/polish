@@ -3,9 +3,856 @@
 # Scans per-CLI logs with per-file cursor offsets and writes pre-aggregated
 # JSON to ~/.usage/polish/. Safe to run from a systemd timer every 60-300s.
 # NEVER runs in prompt render; prompt reads the JSON only.
+#
+# Sources (all paths derive from $HOME unless overridden):
+#   claude   ~/.claude/projects/<slug>/*.jsonl      message.usage (deduped per message)
+#   muse     ~/.local/share/muse/sessions/**/session.jsonl  (model_completed events only)
+#   opencode ~/.local/share/opencode/opencode.db     message rows (read-only; parts ignored)
+#   pi       ~/.pi/agent/sessions/<cwd>/*.jsonl      assistant message.usage
+#   codex    ${CODEX_HOME:-~/.codex}/sessions/**     (skipped silently if not installed)
+#
+# Outputs in ${POLISH_USAGE_DIR:-~/.usage/polish}:
+#   daily.json    {date,total_tokens,total_cost_usd,by_cli,prompt}
+#   <cli>.json    per-CLI daily totals (+models breakdown, unknown_lines)
+#   cursors.json  per-file {size,mtime,offset} cursors (+last_sig for dedupe)
+#
+# Env overrides (used by tests): POLISH_USAGE_DIR, POLISH_PRICES_FILE,
+# POLISH_PRICES_OVERRIDE, POLISH_TODAY (YYYY-MM-DD), CODEX_HOME.
+# Pricing: lib/prices.json (versioned map), deep-merged with
+# ~/.usage/polish/prices.override.json when present. bash + python3 stdlib only.
 set -u
-USAGE_DIR="${HOME}/.usage/polish"
-mkdir -p "$USAGE_DIR"
-echo "polish-tokens-collect: full multi-CLI parsing not implemented yet" >&2
-echo "known sources: claude(~/.claude/projects), muse(~/.local/share/muse/sessions), opencode(opencode.db), pi(~/.pi/agent/sessions), codex(gated: not installed)" >&2
-exit 1
+
+# Resolve through installer symlinks ($PREFIX/polish-tokens-collect -> $SHARE/bin/...)
+# so the bundled price map is found. Portable: readlink without -f.
+_src="$0"
+while [ -L "$_src" ]; do
+  _link="$(readlink "$_src")"
+  case "$_link" in
+    /*) _src="$_link";;
+    *) _src="$(dirname "$_src")/$_link";;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$_src")" && pwd)"
+unset _src _link
+POLISH_PRICES_FILE="${POLISH_PRICES_FILE:-$SCRIPT_DIR/../lib/prices.json}"
+export POLISH_PRICES_FILE
+
+exec python3 - "$@" <<'POLISH_TOKENS_PY'
+"""Embedded poller: tail per-CLI logs, aggregate tokens/cost into JSON."""
+import copy
+import datetime
+import glob
+import json
+import os
+import sqlite3
+import sys
+
+HOME = os.path.expanduser("~")
+USAGE_DIR = os.environ.get("POLISH_USAGE_DIR",
+                           os.path.join(HOME, ".usage", "polish"))
+PRICES_FILE = os.environ.get("POLISH_PRICES_FILE", "")
+PRICES_OVERRIDE = os.environ.get(
+    "POLISH_PRICES_OVERRIDE", os.path.join(USAGE_DIR, "prices.override.json"))
+CODEX_HOME = os.environ.get("CODEX_HOME", os.path.join(HOME, ".codex"))
+TODAY = os.environ.get("POLISH_TODAY", datetime.date.today().isoformat())
+CURSOR_VERSION = 1  # bump when the cursors.json schema changes (resets all)
+
+
+def warn(msg):
+    sys.stderr.write("polish-tokens-collect: %s\n" % msg)
+
+
+def load_json(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return default
+
+
+def atomic_write(path, obj):
+    tmp = path + ".tmp.%d" % os.getpid()
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def num(value):
+    """Coerce to non-negative int, or None when not a usable number."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value != value:  # NaN
+            return None
+        return max(0, int(value))
+    return None
+
+
+def fnum(value):
+    """Coerce to non-negative float, or None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value != value:
+            return None
+        return max(0.0, float(value))
+    return None
+
+
+# ---------------------------------------------------------------- prices ---
+def load_prices():
+    base = load_json(PRICES_FILE, None)
+    if not isinstance(base, dict) or "models" not in base:
+        warn("price map %s missing/invalid; using built-in default" % PRICES_FILE)
+        base = {"version": 1, "models": {}, "default": {}}
+    if not isinstance(base.get("models"), dict):
+        base["models"] = {}
+    over = load_json(PRICES_OVERRIDE, None)
+    if isinstance(over, dict):
+        merged = dict(base.get("models", {}))
+        over_models = over.get("models") or {}
+        if not isinstance(over_models, dict):
+            warn("price override 'models' is not an object; ignoring")
+            over_models = {}
+        for name, rates in over_models.items():
+            if isinstance(rates, dict):
+                merged[name] = dict(merged.get(name, {}))
+                merged[name].update(rates)
+        base["models"] = merged
+        if isinstance(over.get("default"), dict):
+            dflt = dict(base.get("default", {}))
+            dflt.update(over["default"])
+            base["default"] = dflt
+    return base
+
+
+PRICES = load_prices()
+DEFAULT_RATES = {"input": 3.0, "output": 15.0, "cache_read": 0.3,
+                 "cache_write": 3.75, "reasoning": 0.0}
+DEFAULT_RATES.update({k: float(v) for k, v in
+                      (PRICES.get("default") or {}).items()
+                      if isinstance(v, (int, float))})
+
+
+def model_name(value):
+    """Coerce a model label to str (or None); logs sometimes carry objects."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, sort_keys=True)
+        except (TypeError, ValueError):
+            return None
+    return str(value)
+
+
+def rates_for(model):
+    """Resolve per-M-token rates: exact, strip '-suffix' segments, provider/."""
+    models = PRICES.get("models") or {}
+    if not isinstance(models, dict):
+        models = {}
+    if model and isinstance(model, str):
+        candidates = [model]
+        stub = model
+        while "-" in stub:
+            stub = stub.rsplit("-", 1)[0]
+            candidates.append(stub)
+        if "/" in model:
+            candidates.append(model.rsplit("/", 1)[-1])
+        for cand in candidates:
+            hit = models.get(cand)
+            if isinstance(hit, dict):
+                rates = dict(DEFAULT_RATES)
+                rates.update({k: float(v) for k, v in hit.items()
+                              if k in rates and isinstance(v, (int, float))})
+                return rates
+    return dict(DEFAULT_RATES)
+
+
+def price_tokens(tokens, model):
+    r = rates_for(model)
+    return (tokens["input"] * r["input"] + tokens["output"] * r["output"]
+            + tokens["cache_read"] * r["cache_read"]
+            + tokens["cache_write"] * r["cache_write"]
+            + tokens["reasoning"] * r["reasoning"]) / 1e6
+
+
+# ------------------------------------------------------------- cursors ---
+CURSORS_PATH = os.path.join(USAGE_DIR, "cursors.json")
+CURSORS = load_json(CURSORS_PATH, {})
+if not isinstance(CURSORS, dict) or CURSORS.get("version") != CURSOR_VERSION:
+    CURSORS = {}  # missing or foreign schema version: rescan everything
+FILES_CURSOR = CURSORS.get("files")
+if not isinstance(FILES_CURSOR, dict):
+    FILES_CURSOR = {}
+
+
+def file_fingerprint(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return {"size": st.st_size, "mtime": st.st_mtime}
+
+
+def read_new_bytes(path, cursor):
+    """Return (lines, new_offset, size, mtime); holds back partial tail line."""
+    fp = file_fingerprint(path)
+    if fp is None:
+        return [], 0, 0, 0.0
+    offset = cursor.get("offset", 0)
+    if not isinstance(offset, int) or offset < 0 or offset > fp["size"]:
+        offset = 0  # truncated, rotated, or first sight: rescan
+    if offset == fp["size"]:
+        return [], offset, fp["size"], fp["mtime"]
+    with open(path, "rb") as fh:
+        fh.seek(offset)
+        data = fh.read()
+    if data and not data.endswith(b"\n"):
+        cut = data.rfind(b"\n")
+        if cut == -1:
+            return [], offset, fp["size"], fp["mtime"]  # only a partial line
+        data = data[:cut + 1]
+    new_offset = offset + len(data)
+    return data.split(b"\n"), new_offset, fp["size"], fp["mtime"]
+
+
+# --------------------------------------------------------- accumulators ---
+class Accum(object):
+    def __init__(self):
+        self.tokens = {"input": 0, "output": 0, "cache_read": 0,
+                       "cache_write": 0, "reasoning": 0, "total": 0}
+        self.cost = 0.0
+        self.events = 0
+        self.unknown = 0
+        self.deduped = 0
+        self.models = {}
+
+    def add(self, tokens, cost, model):
+        for key in self.tokens:
+            self.tokens[key] += tokens.get(key, 0)
+        self.cost += cost
+        self.events += 1
+        if model and not isinstance(model, str):
+            model = model_name(model)  # last resort: never hash garbage
+        if model:
+            slot = self.models.setdefault(
+                model, {"tokens": 0, "cost_usd": 0.0, "events": 0})
+            slot["tokens"] += tokens.get("total", 0)
+            slot["cost_usd"] += cost
+            slot["events"] += 1
+
+
+def blank_tokens(**kw):
+    toks = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+            "reasoning": 0, "total": 0}
+    toks.update(kw)
+    return toks
+
+
+def finalize_total(toks, reported=None):
+    if reported is None:
+        toks["total"] = (toks["input"] + toks["output"] + toks["cache_read"]
+                         + toks["cache_write"])
+    else:
+        toks["total"] = reported
+    return toks
+
+
+# ------------------------------------------------------ jsonl scanners ---
+def scan_jsonl(path, cursor, handle):
+    """Tail one jsonl file. handle(obj|None-is-blank, raw) -> event|None.
+
+    handle returns ('event', key, tokens, cost_or_None, model),
+    ('unknown',), or ('ignore',). Returns (accum-delta-hook data...).
+    """
+    raw_lines, new_offset, size, mtime = read_new_bytes(path, cursor)
+    events = []
+    unknown = 0
+    for raw in raw_lines:
+        if not raw.strip():
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            unknown += 1
+            continue
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            unknown += 1
+            continue
+        if not isinstance(obj, dict):
+            unknown += 1
+            continue
+        verdict = handle(obj)
+        if verdict[0] == "event":
+            events.append(verdict[1:])
+        elif verdict[0] == "unknown":
+            unknown += 1
+    new_cursor = {"size": size, "mtime": mtime, "offset": new_offset}
+    if "last_sig" in cursor:
+        new_cursor["last_sig"] = cursor["last_sig"]
+    return events, unknown, new_cursor
+
+
+def apply_dedupe(events, cursor, accum):
+    """Drop repeats: in-run seen-set + cursor boundary signature.
+
+    seen covers duplicates inside this delta; last_sig covers a repeat run
+    that straddles the previous cursor offset (only while the leading new
+    events still match it).
+    """
+    seen = set()
+    boundary = cursor.get("last_sig")
+    kept = []
+    for key, tokens, cost, model in events:
+        if boundary is not None:
+            if key == boundary:
+                accum.deduped += 1
+                continue
+            boundary = None
+        if key in seen:
+            accum.deduped += 1
+            continue
+        seen.add(key)
+        kept.append((key, tokens, cost, model))
+    if kept:
+        cursor["last_sig"] = kept[-1][0]
+    # else: no new events, or everything was a repeat; keep old signature.
+    return kept
+
+
+def commit_events(kept, accum):
+    for _key, tokens, cost, model in kept:
+        if cost is None:
+            cost = price_tokens(tokens, model)
+        accum.add(tokens, cost, model)
+
+
+# ------------------------------------------------------------- claude ---
+def handle_claude(obj):
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return ("ignore",)
+    usage = msg.get("usage")
+    if usage is None:
+        return ("ignore",)
+    if not isinstance(usage, dict):
+        return ("unknown",)
+    vals = {}
+    for ours, theirs in (("input", "input_tokens"),
+                         ("output", "output_tokens"),
+                         ("cache_read", "cache_read_input_tokens"),
+                         ("cache_write", "cache_creation_input_tokens")):
+        if theirs in usage:
+            coerced = num(usage[theirs])
+            if coerced is None:
+                return ("unknown",)
+            vals[ours] = coerced
+    if not vals:
+        return ("ignore",)  # usage object with no token fields: not our shape
+    toks = blank_tokens(**vals)
+    finalize_total(toks)
+    model = model_name(msg.get("model") or obj.get("requestedModel"))
+    key = "claude|%s|%s" % (msg.get("id") or obj.get("uuid") or "?",
+                            json.dumps(vals, sort_keys=True))
+    return ("event", key, toks, None, model)
+
+
+def collect_claude(accum):
+    root = os.path.join(HOME, ".claude", "projects")
+    if not os.path.isdir(root):
+        return "absent"
+    for path in sorted(glob.glob(os.path.join(root, "**", "*.jsonl"),
+                                 recursive=True)):
+        cursor = FILES_CURSOR.get(path)
+        if not isinstance(cursor, dict):
+            cursor = {}
+        try:
+            events, unknown, new_cursor = scan_jsonl(path, cursor, handle_claude)
+        except OSError as exc:
+            warn("claude %s: %s" % (path, exc))
+            continue
+        accum.unknown += unknown
+        kept = apply_dedupe(events, new_cursor, accum)
+        commit_events(kept, accum)
+        FILES_CURSOR[path] = new_cursor
+    return "ok"
+
+
+# --------------------------------------------------------------- muse ---
+def handle_muse(obj):
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return ("ignore",)
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        return ("ignore",)
+    if event.get("kind") != "model_completed":
+        return ("ignore",)  # other event kinds are expected noise
+    usage = event.get("usage")
+    if not isinstance(usage, dict):
+        return ("unknown",)
+    vals = {}
+    for ours, theirs in (("input", "input_tokens"),
+                         ("output", "output_tokens"),
+                         ("cache_read", "cache_read_tokens"),
+                         ("cache_write", "cache_write_tokens"),
+                         ("reasoning", "reasoning_tokens")):
+        if theirs in usage:
+            coerced = num(usage[theirs])
+            if coerced is None:
+                return ("unknown",)
+            vals[ours] = coerced
+    if not vals:
+        return ("ignore",)  # usage object with no token fields: not our shape
+    toks = blank_tokens(**vals)
+    finalize_total(toks)  # reasoning tracked separately, not added to total
+    model = model_name(event.get("model"))
+    # Envelope id/recorded_at distinguish two otherwise-identical completions;
+    # true repeats (same line re-read) still share the key and dedupe.
+    key = "muse|%s|%s|%s|%s|%s|%s" % (
+        model, json.dumps(vals, sort_keys=True), event.get("duration_ms"),
+        event.get("estimated_prompt_tokens"), obj.get("id"),
+        obj.get("recorded_at"))
+    return ("event", key, toks, None, model)
+
+
+def collect_muse(accum):
+    root = os.path.join(HOME, ".local", "share", "muse", "sessions")
+    if not os.path.isdir(root):
+        return "absent"
+    for path in sorted(glob.glob(os.path.join(root, "**", "session.jsonl"),
+                                 recursive=True)):
+        cursor = FILES_CURSOR.get(path)
+        if not isinstance(cursor, dict):
+            cursor = {}
+        try:
+            events, unknown, new_cursor = scan_jsonl(path, cursor, handle_muse)
+        except OSError as exc:
+            warn("muse %s: %s" % (path, exc))
+            continue
+        accum.unknown += unknown
+        kept = apply_dedupe(events, new_cursor, accum)
+        commit_events(kept, accum)
+        FILES_CURSOR[path] = new_cursor
+    return "ok"
+
+
+# ----------------------------------------------------------------- pi ---
+def handle_pi(obj):
+    if obj.get("type") != "message":
+        return ("ignore",)
+    msg = obj.get("message")
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+        return ("ignore",)
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return ("unknown",)
+    vals = {}
+    for ours, theirs in (("input", "input"), ("output", "output"),
+                         ("cache_read", "cacheRead"),
+                         ("cache_write", "cacheWrite"),
+                         ("reasoning", "reasoning")):
+        if theirs in usage:
+            coerced = num(usage[theirs])
+            if coerced is None:
+                return ("unknown",)
+            vals[ours] = coerced
+    if not vals:
+        return ("ignore",)
+    reported_total = num(usage.get("totalTokens")) if "totalTokens" in usage else None
+    if "totalTokens" in usage and reported_total is None:
+        return ("unknown",)
+    toks = blank_tokens(**vals)
+    finalize_total(toks, reported_total)
+    cost = None
+    raw_cost = usage.get("cost")
+    if isinstance(raw_cost, dict) and "total" in raw_cost:
+        cost = fnum(raw_cost["total"])
+        if cost is None:
+            return ("unknown",)
+    model = model_name(msg.get("model"))
+    key = "pi|%s|%s" % (obj.get("id") or "?", json.dumps(vals, sort_keys=True))
+    return ("event", key, toks, cost, model)
+
+
+def collect_pi(accum):
+    root = os.path.join(HOME, ".pi", "agent", "sessions")
+    if not os.path.isdir(root):
+        return "absent"
+    for path in sorted(glob.glob(os.path.join(root, "**", "*.jsonl"),
+                                 recursive=True)):
+        if os.path.basename(path) == "auth.json":
+            continue  # never touch credentials
+        cursor = FILES_CURSOR.get(path)
+        if not isinstance(cursor, dict):
+            cursor = {}
+        try:
+            events, unknown, new_cursor = scan_jsonl(path, cursor, handle_pi)
+        except OSError as exc:
+            warn("pi %s: %s" % (path, exc))
+            continue
+        accum.unknown += unknown
+        kept = apply_dedupe(events, new_cursor, accum)
+        commit_events(kept, accum)
+        FILES_CURSOR[path] = new_cursor
+    return "ok"
+
+
+# ----------------------------------------------------------- opencode ---
+def db_fingerprint(db):
+    fp = file_fingerprint(db)
+    if fp is None:
+        return None
+    for suffix, key in (("-wal", "wal"), ("-shm", "shm")):
+        sidecar = file_fingerprint(db + suffix)
+        fp[key + "_size"] = sidecar["size"] if sidecar else 0
+        fp[key + "_mtime"] = sidecar["mtime"] if sidecar else 0.0
+    return fp
+
+
+def collect_opencode(accum):
+    db = os.path.join(HOME, ".local", "share", "opencode", "opencode.db")
+    fp = db_fingerprint(db)
+    if fp is None:
+        return "absent"
+    cursor = FILES_CURSOR.get(db)
+    if not isinstance(cursor, dict):
+        cursor = {}
+    # Fast path: nothing changed since last run (WAL sidecars included).
+    if all(cursor.get(k) == v for k, v in fp.items()) and "offset" in cursor:
+        return "ok"
+    try:
+        # Read-only URI + query_only: never creates WAL/SHM or locks writers.
+        uri = "file:%s?mode=ro" % db.replace("?", "%3F")
+        con = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            con.execute("PRAGMA query_only=ON")
+            rows = con.execute(
+                "SELECT id, time_updated, data FROM message "
+                "ORDER BY time_updated, id").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        warn("opencode %s: %s" % (db, exc))
+        return "error"
+    watermark = cursor.get("offset", -1)
+    if not isinstance(watermark, int):
+        watermark = -1
+    # billed: {row_id: time_updated-at-billing}. Tolerate the pre-1.1 list
+    # form. Entries older than the watermark are pruned: the watermark skip
+    # below already covers them, so the map stays bounded by same-stamp volume
+    # (no double count, no unbounded growth).
+    raw_billed = cursor.get("billed")
+    if isinstance(raw_billed, dict):
+        billed = {k: v for k, v in raw_billed.items()
+                  if isinstance(v, int) and v >= watermark}
+    else:
+        legacy = cursor.get("counted") or []
+        billed = {i: watermark for i in legacy if isinstance(i, str)}
+    pending_prev = set(cursor.get("pending") or [])
+    pending = set()
+    row_ids = set()
+    max_seen = watermark
+    for row_id, updated, data in rows:
+        if not isinstance(updated, int):
+            continue
+        row_ids.add(row_id)
+        if updated > max_seen:
+            max_seen = updated
+        if updated < watermark and row_id not in pending_prev:
+            continue
+        try:
+            msg = json.loads(data)
+        except (TypeError, ValueError):
+            accum.unknown += 1
+            continue
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tokens = msg.get("tokens")
+        if not isinstance(tokens, dict):
+            continue  # assistant msg without tokens (e.g. error stub)
+        vals = {}
+        for ours, theirs in (("input", "input"), ("output", "output"),
+                             ("reasoning", "reasoning")):
+            if theirs in tokens:
+                coerced = num(tokens[theirs])
+                if coerced is None:
+                    vals = None
+                    break
+                vals[ours] = coerced
+        if vals is None:
+            accum.unknown += 1
+            continue
+        cache = tokens.get("cache")
+        if isinstance(cache, dict):
+            for ours, theirs in (("cache_read", "read"),
+                                 ("cache_write", "write")):
+                if theirs in cache:
+                    coerced = num(cache[theirs])
+                    if coerced is None:
+                        vals = None
+                        break
+                    vals[ours] = coerced
+            if vals is None:
+                accum.unknown += 1
+                continue
+        if not any(vals.values()):
+            # All-zero stub (in-flight/errored): track as pending so it is
+            # re-examined next run even if time_updated never bumps.
+            pending.add(row_id)
+            continue
+        if row_id in billed:
+            # Bill once ever: re-touches (same or newer stamp) refresh the
+            # entry so warm rows survive pruning. Residual: a row pruned as
+            # cold and touched again with a newer stamp bills a second time
+            # (requires two touches across a watermark advance).
+            billed[row_id] = max(billed[row_id], updated)
+            continue
+        # NOTE: tokens.total is the running context size at that message, not
+        # the per-message count (it grows while input jumps up/down), so it
+        # must NOT be summed. Sum the per-message parts instead.
+        toks = blank_tokens(**vals)
+        finalize_total(toks)
+        cost = fnum(msg.get("cost")) if "cost" in msg else None
+        if "cost" in msg and cost is None:
+            accum.unknown += 1
+            continue
+        model = model_name(msg.get("modelID"))
+        commit_events([(None, toks, cost, model)], accum)
+        billed[row_id] = updated
+    # NOTE: the part table (step-start/text/step-finish/...) is deliberately
+    # never read: each message row already carries its full tokens+cost, so
+    # counting message rows alone counts every message exactly once.
+    billed = {k: v for k, v in billed.items() if v >= max_seen}
+    pending |= {i for i in pending_prev if i in row_ids}
+    pending -= set(billed)
+    new_cursor = dict(fp)
+    new_cursor["offset"] = max_seen  # watermark over time_updated
+    new_cursor["billed"] = billed
+    new_cursor["pending"] = sorted(pending)[-1000:]
+    FILES_CURSOR[db] = new_cursor
+    return "ok"
+
+
+# -------------------------------------------------------------- codex ---
+def find_codex_usage(obj):
+    """Best-effort usage extraction.
+
+    Returns (vals, model), the string "bad" when a usage-shaped candidate
+    exists but a value fails numeric coercion, or None when no usage shape.
+    """
+    candidates = []
+    if isinstance(obj.get("usage"), dict):
+        candidates.append(obj["usage"])
+    for key in ("token_usage", "total_token_usage"):
+        if isinstance(obj.get(key), dict):
+            candidates.append(obj[key])
+    payload = obj.get("payload")
+    if isinstance(payload, dict):
+        if isinstance(payload.get("usage"), dict):
+            candidates.append(payload["usage"])
+        info = payload.get("info")
+        if isinstance(info, dict):
+            for key in ("token_usage", "usage", "total_token_usage"):
+                if isinstance(info.get(key), dict):
+                    candidates.append(info[key])
+    saw_bad = False
+    for usage in candidates:
+        vals = {}
+        ok = True
+        for ours, theirstuple in (
+                ("input", ("input_tokens", "input")),
+                ("output", ("output_tokens", "output")),
+                ("cache_read", ("cache_read_tokens", "cache_read",
+                                "cached_tokens")),
+                ("cache_write", ("cache_write_tokens", "cache_creation_tokens",
+                                 "cache_write")),
+                ("reasoning", ("reasoning_tokens", "reasoning"))):
+            for theirs in theirstuple:
+                if theirs in usage:
+                    coerced = num(usage[theirs])
+                    if coerced is None:
+                        ok = False
+                    else:
+                        vals[ours] = coerced
+                    break
+        if ok and vals:
+            model = obj.get("model")
+            if not model and isinstance(payload, dict):
+                model = payload.get("model")
+            return vals, model_name(model)
+        if not ok:
+            saw_bad = True
+    if saw_bad:
+        return "bad"
+    return None
+
+
+def handle_codex(obj):
+    found = find_codex_usage(obj)
+    if found is None:
+        return ("ignore",)  # codex logs are noisy; only usage lines count
+    if found == "bad":
+        return ("unknown",)  # usage-shaped but values failed coercion
+    vals, model = found
+    toks = blank_tokens(**vals)
+    finalize_total(toks)
+    # Carry id/timestamp fields so two otherwise-identical responses count
+    # twice; byte-identical repeats still share the key and dedupe.
+    stamp = obj.get("id") or obj.get("timestamp") or obj.get("time")
+    if stamp is None:
+        payload = obj.get("payload")
+        if isinstance(payload, dict):
+            stamp = (payload.get("id") or payload.get("timestamp")
+                     or payload.get("time"))
+    key = "codex|%s|%s|%s" % (model, json.dumps(vals, sort_keys=True), stamp)
+    return ("event", key, toks, None, model)
+
+
+def collect_codex(accum):
+    if not os.path.isdir(CODEX_HOME):
+        return "absent"  # not installed: skip silently
+    sessions = os.path.join(CODEX_HOME, "sessions")
+    if not os.path.isdir(sessions):
+        return "absent"
+    for path in sorted(glob.glob(os.path.join(sessions, "**", "*.jsonl"),
+                                 recursive=True)):
+        cursor = FILES_CURSOR.get(path)
+        if not isinstance(cursor, dict):
+            cursor = {}
+        try:
+            events, unknown, new_cursor = scan_jsonl(path, cursor, handle_codex)
+        except OSError as exc:
+            warn("codex %s: %s" % (path, exc))
+            continue
+        accum.unknown += unknown
+        kept = apply_dedupe(events, new_cursor, accum)
+        commit_events(kept, accum)
+        FILES_CURSOR[path] = new_cursor
+    return "ok"
+
+
+# ------------------------------------------------------------- outputs ---
+SOURCES = (("claude", collect_claude), ("muse", collect_muse),
+           ("opencode", collect_opencode), ("pi", collect_pi),
+           ("codex", collect_codex))
+
+
+def short_tokens(n):
+    if n >= 1e6:
+        return "%.1fM" % (n / 1e6)
+    if n >= 1e3:
+        return "%dK" % int(round(n / 1e3))
+    return str(n)
+
+
+def fresh_cli_doc(cli):
+    return {"cli": cli, "date": TODAY, "total_tokens": 0, "total_cost_usd": 0.0,
+            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+            "cache_write_tokens": 0, "reasoning_tokens": 0, "events": 0,
+            "unknown_lines": 0, "deduped_lines": 0, "models": {}}
+
+
+def main(argv):
+    for arg in argv:
+        if arg.startswith("-") and arg not in ("--help", "-h"):
+            sys.stderr.write("unknown option: %s\n"
+                             "usage: polish-tokens-collect [--help]\n" % arg)
+            return 2
+    if "--help" in argv or "-h" in argv:
+        sys.stdout.write(
+            "usage: polish-tokens-collect [--help]\n"
+            "Tail per-CLI usage logs into %s/{daily,<cli>,cursors}.json\n"
+            % USAGE_DIR)
+        return 0
+    try:
+        os.makedirs(USAGE_DIR, exist_ok=True)
+    except OSError as exc:
+        warn("cannot create %s: %s" % (USAGE_DIR, exc))
+        return 1
+    summary = []
+    ran = []
+    for cli, func in SOURCES:
+        accum = Accum()
+        saved_cursors = copy.deepcopy(FILES_CURSOR)
+        try:
+            status = func(accum)
+        except Exception as exc:  # one bad source must not sink the run
+            warn("%s collector failed: %s" % (cli, exc))
+            status = "error"
+        if status == "absent":
+            continue
+        if status == "error":
+            # Atomic failure: drop partial totals AND partial cursor updates
+            # so the next run retries this source cleanly (no double count,
+            # no undercount, no permanent stall).
+            FILES_CURSOR.clear()
+            FILES_CURSOR.update(saved_cursors)
+            summary.append("%s:error" % cli)
+            continue
+        ran.append(cli)
+        path = os.path.join(USAGE_DIR, cli + ".json")
+        doc = load_json(path, None)
+        if not isinstance(doc, dict) or doc.get("date") != TODAY:
+            doc = fresh_cli_doc(cli)  # new day (or first run): reset
+        doc["total_tokens"] += accum.tokens["total"]
+        doc["total_cost_usd"] += accum.cost
+        doc["input_tokens"] += accum.tokens["input"]
+        doc["output_tokens"] += accum.tokens["output"]
+        doc["cache_read_tokens"] += accum.tokens["cache_read"]
+        doc["cache_write_tokens"] += accum.tokens["cache_write"]
+        doc["reasoning_tokens"] += accum.tokens["reasoning"]
+        doc["events"] += accum.events
+        doc["unknown_lines"] += accum.unknown
+        doc["deduped_lines"] += accum.deduped
+        models = doc.get("models")
+        if not isinstance(models, dict):
+            models = doc["models"] = {}
+        for name, slot in accum.models.items():
+            entry = models.setdefault(
+                name, {"tokens": 0, "cost_usd": 0.0, "events": 0})
+            entry["tokens"] += slot["tokens"]
+            entry["cost_usd"] += slot["cost_usd"]
+            entry["events"] += slot["events"]
+        doc["updated_at"] = datetime.datetime.now(
+            datetime.timezone.utc).isoformat(timespec="seconds")
+        atomic_write(path, doc)
+        summary.append("%s:+%d/+%.4f" % (cli, accum.tokens["total"],
+                                        accum.cost))
+    for tracked in list(FILES_CURSOR):
+        if not os.path.exists(tracked):
+            del FILES_CURSOR[tracked]  # rotated/deleted logs: drop the cursor
+    atomic_write(CURSORS_PATH,
+                 {"version": CURSOR_VERSION, "files": FILES_CURSOR})
+    # daily.json is rebuilt from today's per-CLI docs so it never drifts.
+    by_cli = {}
+    total_tokens = 0
+    total_cost = 0.0
+    for cli, _func in SOURCES:
+        doc = load_json(os.path.join(USAGE_DIR, cli + ".json"), None)
+        if isinstance(doc, dict) and doc.get("date") == TODAY:
+            toks = doc.get("total_tokens", 0) or 0
+            cost = doc.get("total_cost_usd", 0.0) or 0.0
+            by_cli[cli] = {"tokens": toks, "cost_usd": round(cost, 6)}
+            total_tokens += toks
+            total_cost += cost
+    total_cost = round(total_cost, 6)
+    daily = {"date": TODAY, "total_tokens": total_tokens,
+             "total_cost_usd": total_cost, "by_cli": by_cli,
+             "prompt": "$%.2f | %s tok" % (total_cost,
+                                           short_tokens(total_tokens))}
+    atomic_write(os.path.join(USAGE_DIR, "daily.json"), daily)
+    sys.stderr.write("polish-tokens-collect: date=%s total=%d tokens $%.4f "
+                     "sources=[%s] %s\n"
+                     % (TODAY, total_tokens, total_cost, ",".join(ran),
+                        " ".join(summary)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+POLISH_TOKENS_PY

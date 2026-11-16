@@ -1,0 +1,23 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: build tarball
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          git archive --format=tar.gz --prefix="polish-${tag}/" HEAD > "polish-${tag}.tar.gz"
+          ls -la "polish-${tag}.tar.gz"
+      - name: attach installer + tarball
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer/install.sh
+            polish-${{ github.ref_name }}.tar.gz
