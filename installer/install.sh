@@ -15,6 +15,19 @@ FROM=""
 UNINSTALL=0
 TIMER=0
 
+usage() {
+  # Heredoc, not `sed -n ... $0`: curl-pipe installs run with $0=bash.
+  cat <<'EOF'
+polish installer: repo -> SHARE/polish, hook line -> shell rc (with backup),
+starship preset -> ~/.config/starship.toml (with backup), optional systemd
+user timer for polish-tokens-collect.
+Usage:
+  install.sh [--shell bash|zsh] [--from DIR|URL] [--prefix DIR] [--share DIR] [--timer]
+  install.sh --uninstall [--shell ...] [--share DIR]
+Env: POLISH_VERSION (default: main), GITHUB_REPO (default: nitishagar/polish)
+EOF
+}
+
 # need_value FLAG ARGC — die unless a value argument follows FLAG.
 need_value() {
   if [ "$2" -lt 2 ]; then
@@ -30,7 +43,7 @@ while [ $# -gt 0 ]; do
     --share) need_value "$1" $#; SHARE="$2"; shift 2;;
     --timer) TIMER=1; shift;;
     --uninstall) UNINSTALL=1; shift;;
-    -h|--help) sed -n '2,7p' "$0"; exit 0;;
+    -h|--help) usage; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
 done

@@ -154,6 +154,9 @@ grep -q "user edit" "$_t8/.config/starship.toml" && ok "edited orphan kept" || b
 HOME="$_t8" SHELL=/bin/bash "$ROOT/installer/install.sh" --shell bash --from "$ROOT" --prefix "$_t8/a&b|c" --timer >/dev/null 2>&1
 grep -qF "ExecStart=$_t8/a&b|c/polish-tokens-collect" "$_t8/.config/systemd/user/polish-tokens.service" \
   && ok "prefix sed-escaped" || bad "prefix sed" "ExecStart mangled"
+# curl-pipe form: --help must work with $0=bash (no sed of $0).
+bash -s -- --help < "$ROOT/installer/install.sh" 2>/dev/null | grep -q '^Usage:' \
+  && ok "curl-pipe --help" || bad "curl-pipe --help" "broken under stdin"
 rm -rf "$_t8"
 
 echo "---"
