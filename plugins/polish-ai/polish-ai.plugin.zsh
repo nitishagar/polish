@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # polish-ai: agent CLI integration (claude, muse, codex, opencode, pi).
 # Detection + launchers + session helpers. Codex paths stay gated behind
 # an installed-check until codex exists on the machine.

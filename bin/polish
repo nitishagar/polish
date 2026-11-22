@@ -3,7 +3,7 @@
 set -u
 
 POLISH_DIR="${POLISH_DIR:-$HOME/.local/share/polish}"
-USAGE_DIR="${HOME}/.usage/polish"
+USAGE_DIR="${POLISH_USAGE_DIR:-$HOME/.usage/polish}"
 VERSION="0.1.0"
 
 usage() {

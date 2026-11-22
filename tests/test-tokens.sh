@@ -334,6 +334,80 @@ assert c['version']==1, c"
 export HOME="$fake"
 export CODEX_HOME="$fake/.codex"
 
+# ---------------- run 10: single-flight lock (failing-first for Phase 3) ---
+export POLISH_USAGE_DIR="$fake/.usage10"
+export POLISH_PRICES_OVERRIDE="$fake/.usage10/prices.override.json"
+mkdir -p "$fake/m10/.claude/projects/slug"
+export HOME="$fake/m10"
+export CODEX_HOME="$fake/m10/.codex-absent"
+cat > "$fake/m10/.claude/projects/slug/x.jsonl" <<'EOF'
+{"type":"assistant","uuid":"l1","message":{"model":"m","id":"m1","role":"assistant","usage":{"input_tokens":10,"output_tokens":5}}}
+EOF
+"$COLLECT" 2>>"$ERR" && ok "run10 prime exit 0" || bad "run10 prime" "nonzero exit"
+cat >> "$fake/m10/.claude/projects/slug/x.jsonl" <<'EOF'
+{"type":"assistant","uuid":"l2","message":{"model":"m","id":"m2","role":"assistant","usage":{"input_tokens":7,"output_tokens":3}}}
+EOF
+_before="$(sha256sum "$fake/.usage10/claude.json" "$fake/.usage10/daily.json" "$fake/.usage10/cursors.json")"
+python3 - "$fake/.usage10/.collect.lock" "$fake/.usage10/.ready" <<'PYEOF' &
+import fcntl, os, sys, time
+fh = open(sys.argv[1], "a")
+fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+open(sys.argv[2], "w").write("held")
+time.sleep(30)
+PYEOF
+_holder=$!
+_ready_ok=0
+for _i in $(seq 1 50); do
+  [ -f "$fake/.usage10/.ready" ] && { _ready_ok=1; break; }
+  sleep 0.1
+done
+[ "$_ready_ok" = 1 ] && ok "lock holder ready" || bad "lock holder" "never signaled"
+"$COLLECT" >"$fake/lock.out" 2>"$fake/lock.err"; _lock_rc=$?
+kill "$_holder" 2>/dev/null; wait "$_holder" 2>/dev/null
+_after="$(sha256sum "$fake/.usage10/claude.json" "$fake/.usage10/daily.json" "$fake/.usage10/cursors.json")"
+[ "$_lock_rc" = 0 ] && ok "contended run exits 0" || bad "contended run" "rc=$_lock_rc"
+grep -q "another run is active, skipping" "$fake/lock.err" \
+  && ok "contended run skip note" || bad "contended run" "no skip note (billed through?)"
+[ "$_before" = "$_after" ] \
+  && ok "contended run zero delta" || bad "contended run" "cache changed under lock"
+rm -f "$fake/.usage10/.ready"
+
+# run 11: legacy counted-list cursor migrates (pin; code already tolerates).
+export POLISH_USAGE_DIR="$fake/.usage11"
+mkdir -p "$fake/h11/.local/share/opencode"
+python3 - "$fake/h11/.local/share/opencode/opencode.db" <<'EOF'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, time_updated INT, data TEXT)")
+con.execute("INSERT INTO message VALUES (?,?,?,?,?)", ("old1", "s", 100, 100,
+    json.dumps({"role": "assistant", "tokens": {"input": 10, "output": 5}, "cost": 0.0, "modelID": "m"})))
+con.commit(); con.close()
+EOF
+export HOME="$fake/h11"
+export CODEX_HOME="$fake/h11/.codex-absent"
+"$COLLECT" 2>>"$ERR" && ok "run11 prime exit 0" || bad "run11 prime" "nonzero exit"
+U11ROOT="$fake" python3 - <<'PYEOF'
+import json, os
+p = os.path.join(os.environ["U11ROOT"], ".usage11", "cursors.json")
+c = json.load(open(p))
+db = os.path.join(os.environ["U11ROOT"], "h11", ".local", "share", "opencode", "opencode.db")
+cur = c["files"][db]
+cur["counted"] = list(cur["billed"])
+del cur["billed"]
+json.dump(c, open(p, "w"))
+PYEOF
+touch "$fake/h11/.local/share/opencode/opencode.db"  # defeat fast path, no content change
+"$COLLECT" 2>>"$ERR" && ok "run11 exit 0" || bad "run11" "nonzero exit"
+pyassert "legacy counted list bills once and migrates" "
+import json
+d=json.load(open('$fake/.usage11/opencode.json'))
+assert d['events']==1 and d['total_tokens']==15, d
+c=json.load(open('$fake/.usage11/cursors.json'))['files']
+db='$fake/h11/.local/share/opencode/opencode.db'
+assert c[db]['billed']=={'old1':100}, c[db]"
+export HOME="$fake"
+export CODEX_HOME="$fake/.codex"
+
 echo "---"
 echo "tokens: pass=$pass fail=$fail"
 [ "$fail" = 0 ]

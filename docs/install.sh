@@ -199,11 +199,47 @@ install_timer() {
 # --- install ---
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+# Verify a downloaded tarball when the caller pins a hash. Uses sha256sum,
+# falling back to shasum -a 256 (macOS); comparison is exact lowercase hex.
+verify_tarball() {
+  _vt_file="$1"
+  if [ -z "${POLISH_TARBALL_SHA256:-}" ]; then
+    echo "warning: unverified download (set POLISH_TARBALL_SHA256 to verify)" >&2
+    return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    _vt_got="$(sha256sum "$_vt_file" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    _vt_got="$(shasum -a 256 "$_vt_file" | awk '{print $1}')"
+  else
+    echo "error: POLISH_TARBALL_SHA256 is set but no sha256 tool found" >&2
+    return 1
+  fi
+  _vt_want="$(printf '%s' "$POLISH_TARBALL_SHA256" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  if [ "$_vt_got" != "$_vt_want" ]; then
+    echo "error: tarball checksum mismatch" >&2
+    return 1
+  fi
+  unset _vt_file _vt_got _vt_want
+  return 0
+}
+# Reject tar-slip members before extracting. Portable member-name check
+# (bsdtar and GNU tar differ on .. handling, so we never rely on the tool):
+# absolute paths or any .. path component aborts the install.
+validate_members() {
+  if tar -tzf "$1" 2>/dev/null | grep -Eq '(^|/)\.\.(/|$)|^/'; then
+    echo "error: tarball contains unsafe member names" >&2
+    return 1
+  fi
+  return 0
+}
 srcdir=""
 if [ -n "$FROM" ] && [ -d "$FROM" ]; then
   srcdir="$FROM"
 elif [ -n "$FROM" ]; then
   curl -fsSL -o "$tmpdir/polish.tar.gz" "$FROM" || { echo "download failed: $FROM" >&2; exit 1; }
+  verify_tarball "$tmpdir/polish.tar.gz" || exit 1
+  validate_members "$tmpdir/polish.tar.gz" || exit 1
   mkdir -p "$tmpdir/src" && tar -xzf "$tmpdir/polish.tar.gz" -C "$tmpdir/src"
   srcdir="$(find "$tmpdir/src" -maxdepth 2 -name init.zsh -exec dirname {} \; 2>/dev/null | head -1)"
   [ -n "$srcdir" ] || { echo "archive missing init.zsh" >&2; exit 1; }
@@ -213,6 +249,8 @@ else
   version="${POLISH_VERSION:-main}"
   url="https://github.com/$REPO/archive/refs/heads/$version.tar.gz"
   curl -fsSL -o "$tmpdir/polish.tar.gz" "$url" || { echo "download failed: $url" >&2; exit 1; }
+  verify_tarball "$tmpdir/polish.tar.gz" || exit 1
+  validate_members "$tmpdir/polish.tar.gz" || exit 1
   mkdir -p "$tmpdir/src" && tar -xzf "$tmpdir/polish.tar.gz" -C "$tmpdir/src"
   srcdir="$(find "$tmpdir/src" -maxdepth 2 -name init.zsh -exec dirname {} \; 2>/dev/null | head -1)"
   [ -n "$srcdir" ] || { echo "archive missing init.zsh" >&2; exit 1; }

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Polish loader. Sourced from ~/.zshrc inside the marked # >>> polish >>> block.
 # Order mirrors oh-my-zsh.sh: guard -> defaults -> fpath/compinit (once) ->
 # libs -> plugins -> custom -> theme (starship, cached, last).
@@ -57,12 +58,22 @@ fi
 # --- theme: starship, cached eval, last --------------------------------------
 if command -v starship >/dev/null 2>&1; then
   _polish_starship_cache="$POLISH_CACHE_DIR/starship-init.zsh"
-  if [ ! -f "$_polish_starship_cache" ]; then
-    starship init zsh >"$_polish_starship_cache"
+  _polish_starship_bin="$(command -v starship)"
+  # Regenerate when missing or the binary is newer (-nt idiom, like antidote
+  # above). Atomic tmp+mv: a failed regen keeps the good cache. No trap here:
+  # this file is sourced, and a trap would clobber the user's EXIT trap.
+  if [ ! -f "$_polish_starship_cache" ] || [ "$_polish_starship_bin" -nt "$_polish_starship_cache" ]; then
+    _polish_starship_tmp="$(mktemp "$POLISH_CACHE_DIR/starship-init.XXXXXX")"
+    if starship init zsh >"$_polish_starship_tmp" && mv "$_polish_starship_tmp" "$_polish_starship_cache"; then
+      :
+    else
+      rm -f "$_polish_starship_tmp"
+    fi
+    unset _polish_starship_tmp
   fi
   # shellcheck disable=SC1090
   source "$_polish_starship_cache"
-  unset _polish_starship_cache
+  unset _polish_starship_cache _polish_starship_bin
 fi
 
 # --- fast node (prefer fnm over eager nvm) ------------------------------------

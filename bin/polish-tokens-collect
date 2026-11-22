@@ -41,6 +41,7 @@ exec python3 - "$@" <<'POLISH_TOKENS_PY'
 """Embedded poller: tail per-CLI logs, aggregate tokens/cost into JSON."""
 import copy
 import datetime
+import fcntl
 import glob
 import json
 import os
@@ -774,6 +775,24 @@ def main(argv):
     except OSError as exc:
         warn("cannot create %s: %s" % (USAGE_DIR, exc))
         return 1
+    # Single-flight: overlapping timer runs must not interleave read-modify-
+    # write cycles (lost increments). Non-blocking: a contended run skips
+    # entirely, writing nothing — not even prune output.
+    lock_path = os.path.join(USAGE_DIR, ".collect.lock")
+    try:
+        lock_fh = open(lock_path, "a")
+    except OSError as exc:
+        warn("cannot open lock %s: %s (proceeding unlocked)"
+             % (lock_path, exc))
+        lock_fh = None
+    if lock_fh is not None:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.stderr.write("polish-tokens-collect: another run is "
+                             "active, skipping\n")
+            lock_fh.close()
+            return 0
     summary = []
     ran = []
     for cli, func in SOURCES:

@@ -2,7 +2,7 @@
   "version": 1,
   "currency": "USD",
   "per": "1M tokens",
-  "_note": "Estimates only. Model lookup tries the exact name, then strips trailing '-segments' (so 'muse-spark-1.3-contributor' matches 'muse-spark-1.3'), then strips a 'provider/' prefix, then falls back to 'default'. reasoning:0 means reasoning tokens are assumed already included in output_tokens. Override any entry without editing this file via ~/.usage/polish/prices.override.json (same shape, deep-merged over this file).",
+  "_note": "Estimates only. Model lookup tries the exact name, then strips trailing '-segments' (so 'muse-spark-1.3-contributor' matches 'muse-spark-1.3'), then strips a 'provider/' prefix, then falls back to 'default'. reasoning:0 means reasoning tokens are assumed already included in output_tokens. Override any entry without editing this file via ${POLISH_USAGE_DIR:-~/.usage/polish}/prices.override.json (same shape, deep-merged over this file).",
   "default": {
     "input": 3.0,
     "output": 15.0,

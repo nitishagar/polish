@@ -72,8 +72,9 @@ polish tokens --prompt # cached prompt string only, e.g. "$1.23 | 45K tok"</pre>
 prints a context burn gauge like <code>ctx 12% (24,567/200,000)</code>
 (<code>polish_context_pct</code>). <code>cx</code> prefers explicit
 <code>context_tokens</code>/<code>context_window</code> fields when present —
-the collector does not write them yet (roadmap) — and otherwise divides day
-cumulative <code>total_tokens</code> by <code>POLISH_CONTEXT_WINDOW</code>
+the collector does not write them (no single batch value is meaningful, so the
+fallback below is the contract) — and otherwise divides day cumulative
+<code>total_tokens</code> by <code>POLISH_CONTEXT_WINDOW</code>
 (default 200000), so it is a burn-rate gauge, not live context pressure.</p>
 <h2>Prompt modules</h2>
 <p>The Starship preset (<code>starship.toml</code>) adds

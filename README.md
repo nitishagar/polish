@@ -41,7 +41,7 @@ Requires: `zsh`, `git`, `curl`. Optional: `starship`, `antidote`, `fnm`,
 | --- | --- |
 | Agents | Detects installed CLIs, unified `polish agents` status, per-agent session helpers |
 | Tokens | Background poller aggregates per-CLI usage into `~/.usage/`; prompt shows day cost + context % |
-| Windows | tmux autostart/aliases plus native Alt-hjkl switching (zellij/wezterm native configs) |
+| Windows | tmux autostart/aliases plus native Alt-hjkl switching (zellij attach aliases; wezterm stays user config) |
 | Theme | Starship preset with AI modules (tokens, context, agent) |
 
 Docs: <https://nitishagar.github.io/polish/> (`docs/` in this repo).

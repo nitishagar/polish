@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # polish-mux: multiplexer helpers. Shell layer holds autostart + aliases;
 # real switching lives in native tmux/zellij/wezterm keybinds (Alt-hjkl).
 #

@@ -1,6 +1,7 @@
 # Polish starship preset. Symlinked or copied to ~/.config/starship.toml
-# by the installer. Prompt modules read pre-aggregated ~/.usage/*.json only;
-# log parsing never happens in prompt render.
+# by the installer. Tokens/context modules read the pre-aggregated usage-dir
+# cache only (honors $POLISH_USAGE_DIR); token collection never runs here.
+# Agent detection instead scans live session indexes per render, output-capped.
 format = "$directory$git_branch$git_status$polish_tokens$polish_context$polish_agent$character"
 
 [character]
@@ -21,13 +22,15 @@ behind = "⇣${count}"
 # Day cost + tokens, written by polish-tokens-collect.
 [custom.polish_tokens]
 command = "polish tokens --prompt"
-when = "test -f ~/.usage/polish/daily.json"
+when = "test -f \"${POLISH_USAGE_DIR:-$HOME/.usage/polish}/daily.json\""
 symbol = "⚡ "
 format = "[$symbol$output]($style) "
 style = "bold yellow"
 
 # Active agent CLI in this directory (session-aware). Single detection per
-# render: the command exits nonzero when silent, so no separate `when` scan.
+# render: this snippet exits nonzero when silent (the `[ -n "$out" ]` guard),
+# so no separate `when` scan. Note `polish agents --prompt` itself always
+# exits 0; the guard's nonzero exit is what hides the module when empty.
 [custom.polish_agent]
 command = "out=$(polish agents --prompt); [ -n \"$out\" ] && printf '%s' \"$out\""
 symbol = "🤖 "
@@ -38,8 +41,8 @@ style = "bold cyan"
 # read, never log I/O; missing/unreadable cache exits nonzero (hidden).
 # Bad POLISH_CONTEXT_WINDOW falls back to 200000, matching polish_context_pct.
 [custom.polish_context]
-command = "python3 -c 'import json,os;d=json.load(open(os.path.expanduser(\"~/.usage/polish/daily.json\")));t=d.get(\"context_tokens\",d.get(\"total_tokens\",0));t=t if isinstance(t,(int,float)) and not isinstance(t,bool) else 0;w=d.get(\"context_window\",os.environ.get(\"POLISH_CONTEXT_WINDOW\",\"200000\"));w=int(\"\".join(c for c in str(w) if c.isdigit()) or 200000) or 200000;print(\"%d%%\"%(100*int(t)/w))' 2>/dev/null"
-when = "test -f ~/.usage/polish/daily.json"
+command = "python3 -c 'import json,os;d=json.load(open(os.path.join(os.environ.get(\"POLISH_USAGE_DIR\", os.path.expanduser(\"~/.usage/polish\")), \"daily.json\")));t=d.get(\"context_tokens\",d.get(\"total_tokens\",0));t=t if isinstance(t,(int,float)) and not isinstance(t,bool) else 0;w=d.get(\"context_window\",os.environ.get(\"POLISH_CONTEXT_WINDOW\",\"200000\"));w=int(\"\".join(c for c in str(w) if c.isdigit()) or 200000) or 200000;print(\"%d%%\"%(100*int(t)/w))' 2>/dev/null"
+when = "test -f \"${POLISH_USAGE_DIR:-$HOME/.usage/polish}/daily.json\""
 symbol = "🧠 "
 format = "[$symbol$output]($style) "
 style = "bold magenta"

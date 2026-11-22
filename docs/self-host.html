@@ -23,6 +23,10 @@ current directory automatically. <code>--from</code> also accepts a tarball
 URL, which is downloaded and must contain <code>init.zsh</code> within two
 levels:</p>
 <pre>./installer/install.sh --from https://example.com/polish.tar.gz</pre>
+<p>Downloaded tarballs (both <code>--from</code> URLs and the default GitHub
+URL) can be pinned with <code>POLISH_TARBALL_SHA256</code>: a mismatch aborts
+before anything is installed, and an unverified download prints a warning.
+Uses <code>sha256sum</code>, falling back to <code>shasum -a 256</code>.</p>
 <h2>Install from a fork or pinned version</h2>
 <pre>GITHUB_REPO=myorg/polish POLISH_VERSION=v0.2.0 ./installer/install.sh</pre>
 <p>Defaults: <code>GITHUB_REPO=nitishagar/polish</code>,

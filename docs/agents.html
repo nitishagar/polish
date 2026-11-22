@@ -35,7 +35,8 @@ session/project tables, <code>~/.pi/agent/sessions/--&lt;pwd&gt;--/*.jsonl</code
 <code>~/.codex/sessions</code> lines matching a cwd-like field
 (<code>"cwd"|"directory"|"workdir"|"workspace"|"root":"$PWD"</code> —
 incidental path mentions never match). Codex is gated: it is consulted only
-when the <code>codex</code> CLI is installed. The Starship preset runs one
+when the <code>codex</code> CLI is installed. Agent detection scans live
+session indexes per render, output-capped. The Starship preset runs one
 <code>polish agents --prompt</code> per render for the
 <code>polish_agent</code> module (empty output hides it).</p>
 <h2>Session helpers (<code>polish-ai</code> plugin)</h2>

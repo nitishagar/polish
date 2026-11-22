@@ -159,6 +159,177 @@ bash -s -- --help < "$ROOT/installer/install.sh" 2>/dev/null | grep -q '^Usage:'
   && ok "curl-pipe --help" || bad "curl-pipe --help" "broken under stdin"
 rm -rf "$_t8"
 
+# 9. usage-dir contract: all four cache readers agree (set and unset).
+_t9="$(mktemp -d)"
+mkdir -p "$_t9/home/.usage/polish" "$_t9/alt" "$_t9/empty"
+printf '%s' '{"date":"2026-11-16","total_tokens":100,"total_cost_usd":0.01,"by_cli":{},"prompt":"$0.01 | 100 tok"}' > "$_t9/home/.usage/polish/daily.json"
+printf '%s' '{"date":"2026-11-16","total_tokens":200000,"total_cost_usd":0.02,"by_cli":{},"prompt":"$0.02 | 200K tok"}' > "$_t9/alt/daily.json"
+[ "$(HOME="$_t9/home" POLISH_USAGE_DIR="$_t9/alt" "$ROOT/bin/polish" tokens --prompt)" = '$0.02 | 200K tok' ] \
+  && ok "usage-dir honored by polish tokens" || bad "usage-dir polish" "override ignored"
+[ "$(HOME="$_t9/home" "$ROOT/bin/polish" tokens --prompt)" = '$0.01 | 100 tok' ] \
+  && ok "usage-dir default unchanged" || bad "usage-dir default" "changed"
+HOME="$_t9/home" POLISH_USAGE_DIR="$_t9/alt" bash -c 'source "$0" && polish_tokens_today' \
+  "$ROOT/plugins/polish-tokens/polish-tokens.plugin.zsh" 2>/dev/null | grep -q '200K tok' \
+  && ok "usage-dir honored by pt" || bad "usage-dir pt" "override ignored"
+_POLISH_T9="$_t9" _POLISH_TOML="$ROOT/starship.toml" python3 - <<'PYEOF' 2>/dev/null \
+  && ok "usage-dir honored by starship modules" || bad "starship usage-dir" "see failures above"
+import os, subprocess, sys, tomllib
+t9 = os.environ["_POLISH_T9"]
+cfg = tomllib.load(open(os.environ["_POLISH_TOML"], "rb"))
+fails = []
+def check(name, cond):
+    print(("ok   usage-dir starship %s" % name) if cond else ("FAIL usage-dir starship %s" % name))
+    if not cond:
+        fails.append(name)
+def sh(cmd, env):
+    e = dict(os.environ); e.update(env)
+    p = subprocess.run(["sh", "-c", cmd], env=e, capture_output=True, text=True)
+    return p.returncode, p.stdout.strip()
+home = os.path.join(t9, "home"); alt = os.path.join(t9, "alt")
+base = {"HOME": home}
+when = cfg["custom"]["polish_tokens"]["when"]
+check("when-override-hit", sh(when, {**base, "POLISH_USAGE_DIR": alt})[0] == 0)
+check("when-override-wins", sh(when, {**base, "POLISH_USAGE_DIR": os.path.join(t9, "empty")})[0] == 1)
+check("when-default-hit", sh(when, base)[0] == 0)
+spaced = os.path.join(t9, "alt space"); os.makedirs(spaced, exist_ok=True)
+open(os.path.join(spaced, "daily.json"), "w").write('{"prompt":"s"}')
+check("when-space-path", sh(when, {**base, "POLISH_USAGE_DIR": spaced})[0] == 0)
+ctxwhen = cfg["custom"]["polish_context"]["when"]
+check("ctx-when-matches", ctxwhen == when)
+check("ctx-when-override-hit", sh(ctxwhen, {**base, "POLISH_USAGE_DIR": alt})[0] == 0)
+ctx = cfg["custom"]["polish_context"]["command"]
+check("ctx-override", sh(ctx, {**base, "POLISH_USAGE_DIR": alt}) == (0, "100%"))
+check("ctx-default", sh(ctx, base) == (0, "0%"))
+stub = os.path.join(t9, "stubbin"); os.makedirs(stub, exist_ok=True)
+sp = os.path.join(stub, "polish")
+open(sp, "w").write('#!/bin/sh\nif [ "$STUB_OUT" = "empty" ]; then exit 0; else echo "$STUB_OUT"; fi\n')
+os.chmod(sp, 0o755)
+agent = cfg["custom"]["polish_agent"]["command"]
+senv = {"PATH": stub + ":" + os.environ.get("PATH", ""), "STUB_OUT": "empty"}
+check("agent-snippet-empty-hides", sh(agent, senv) == (1, ""))
+senv["STUB_OUT"] = "pi"
+check("agent-snippet-token", sh(agent, senv) == (0, "pi"))
+sys.exit(1 if fails else 0)
+PYEOF
+grep -q "log parsing never happens" "$ROOT/starship.toml" \
+  && bad "never-parses narrowed" "overclaim still present" || ok "never-parses narrowed"
+grep -q 'nonzero' "$ROOT/starship.toml" \
+  && ok "nonzero fact preserved" || bad "nonzero fact" "lost in rewrite"
+grep -q 'zellij/wezterm native configs' "$ROOT/README.md" \
+  && bad "README mux" "stale claim" || ok "README mux fixed"
+grep -q 'POLISH_USAGE_DIR' "$ROOT/lib/prices.json" \
+  && ok "prices note override path" || bad "prices note" "hardcoded path"
+rm -rf "$_t9"
+
+# 10. Phase 2 (HC2): publish integrity + cache regen + lint directives.
+cmp -s "$ROOT/installer/install.sh" "$ROOT/docs/install.sh" \
+  && ok "installer copy in sync" || bad "installer drift" "docs/install.sh differs"
+_t10="$(mktemp -d)"
+tar -czf "$_t10/polish.tar.gz" -C "$ROOT" --exclude=.git . 2>/dev/null
+_t10sum="$(sha256sum "$_t10/polish.tar.gz" | awk '{print $1}')"
+_t10home="$_t10/home"; mkdir -p "$_t10home"; echo "# rc" > "$_t10home/.bashrc"
+HOME="$_t10home" SHELL=/bin/bash POLISH_TARBALL_SHA256=deadbeef \
+  "$ROOT/installer/install.sh" --shell bash --from "file://$_t10/polish.tar.gz" --share "$_t10home/share" >/dev/null 2>&1
+[ "$?" != 0 ] && [ ! -e "$_t10home/share" ] \
+  && ok "checksum mismatch aborts pre-write" || bad "checksum mismatch" "installed despite bad hash"
+HOME="$_t10home" SHELL=/bin/bash POLISH_TARBALL_SHA256="$_t10sum" \
+  "$ROOT/installer/install.sh" --shell bash --from "file://$_t10/polish.tar.gz" --share "$_t10home/share" >/dev/null 2>&1 \
+  && ok "checksum accept installs" || bad "checksum accept" "rejected good hash"
+rm -rf "$_t10home/share"
+HOME="$_t10home" SHELL=/bin/bash "$ROOT/installer/install.sh" --shell bash --from "file://$_t10/polish.tar.gz" --share "$_t10home/share" 2>"$_t10/warn.log" >/dev/null
+grep -q -i "unverified" "$_t10/warn.log" \
+  && ok "unverified download warns" || bad "unverified warning" "silent"
+# shasum fallback: a PATH with every tool EXCEPT sha256sum (macOS shape).
+mkdir -p "$_t10/stubbin"
+for _t in /usr/bin/* /bin/*; do
+  _b="$(basename "$_t")"
+  [ "$_b" = "sha256sum" ] && continue
+  [ -e "$_t10/stubbin/$_b" ] || ln -s "$_t" "$_t10/stubbin/$_b" 2>/dev/null
+done
+rm -f "$_t10/stubbin/shasum"  # never write through a real-shasum symlink
+printf '#!/usr/bin/env python3\nimport hashlib,sys\nprint(hashlib.sha256(open(sys.argv[-1],"rb").read()).hexdigest())\n' > "$_t10/stubbin/shasum" && chmod +x "$_t10/stubbin/shasum"
+rm -rf "$_t10home/share"
+HOME="$_t10home" SHELL=/bin/bash POLISH_TARBALL_SHA256="$_t10sum" PATH="$_t10/stubbin" \
+  "$ROOT/installer/install.sh" --shell bash --from "file://$_t10/polish.tar.gz" --share "$_t10home/share" >/dev/null 2>&1 \
+  && ok "shasum fallback works" || bad "shasum fallback" "broken"
+python3 - "$_t10/evil.tar.gz" <<'PYEOF'
+import io, sys, tarfile
+t = tarfile.open(sys.argv[1], "w:gz")
+i = tarfile.TarInfo("../evil.sh"); d = b"echo pwned"
+i.size = len(d); t.addfile(i, io.BytesIO(d)); t.close()
+PYEOF
+rm -rf "$_t10home/share"
+HOME="$_t10home" SHELL=/bin/bash "$ROOT/installer/install.sh" --shell bash --from "file://$_t10/evil.tar.gz" --share "$_t10home/share" >/dev/null 2>&1
+[ "$?" != 0 ] && [ ! -e "$_t10home/share" ] \
+  && ok "tar-slip tarball rejected" || bad "tar-slip" "unsafe members extracted"
+mkdir -p "$_t10/rgbin" "$_t10/rgcache"
+printf '#!/bin/sh\necho "# new init"\n' > "$_t10/rgbin/starship"; chmod +x "$_t10/rgbin/starship"
+echo "# stale cache" > "$_t10/rgcache/starship-init.zsh"
+touch -d '2020-01-01' "$_t10/rgcache/starship-init.zsh"
+PATH="$_t10/rgbin:/usr/bin:/bin" POLISH_DIR="$ROOT" POLISH_CUSTOM="$_t10/nonexistent" \
+  POLISH_CACHE_DIR="$_t10/rgcache" POLISH_TMUX_AUTOSTART=0 bash -c 'source "$0"' "$ROOT/init.zsh" 2>/dev/null
+grep -q 'new init' "$_t10/rgcache/starship-init.zsh" \
+  && ok "starship cache regenerates on newer binary" || bad "starship regen" "stale cache kept"
+printf '#!/bin/sh\nexit 1\n' > "$_t10/rgbin/starship"
+echo "# good cache" > "$_t10/rgcache/starship-init.zsh"; touch -d '2020-01-01' "$_t10/rgcache/starship-init.zsh"
+PATH="$_t10/rgbin:/usr/bin:/bin" POLISH_DIR="$ROOT" POLISH_CUSTOM="$_t10/nonexistent" \
+  POLISH_CACHE_DIR="$_t10/rgcache" POLISH_TMUX_AUTOSTART=0 bash -c 'source "$0"' "$ROOT/init.zsh" 2>/dev/null
+grep -q 'good cache' "$_t10/rgcache/starship-init.zsh" \
+  && ok "failed regen keeps good cache" || bad "regen clobber" "cache destroyed"
+for _scf in init.zsh plugins/polish-ai/polish-ai.plugin.zsh plugins/polish-mux/polish-mux.plugin.zsh plugins/polish-tokens/polish-tokens.plugin.zsh; do
+  grep -q '^# shellcheck shell=bash' "$ROOT/$_scf" \
+    && ok "directive $_scf" || bad "directive $_scf" "missing shell directive"
+done
+rm -rf "$_t10"
+
+# 11. Phase 3 (HC3): prompt trust pins + hang guard.
+# Measured budget (2026-11-22, this machine): agents --prompt over 2001 muse
+# session lines completes in ~0.04s. The guard below (timeout 10) is a hang
+# detector, not a perf assertion — CI variance forbids a tight threshold.
+_t11="$(mktemp -d)"
+mkdir -p "$_t11/home/.local/share/muse/sessions/big" "$_t11/home/work"
+for _i in $(seq 1 2000); do
+  echo "{\"payload\":{\"event\":{\"kind\":\"status\",\"msg\":\"stale $_i\"}}}"
+done > "$_t11/home/.local/share/muse/sessions/big/session.jsonl"
+echo "{\"cwd\":\"$_t11/home/work\",\"payload\":{\"event\":{\"kind\":\"model_completed\"}}}" >> "$_t11/home/.local/share/muse/sessions/big/session.jsonl"
+if command -v timeout >/dev/null 2>&1; then
+  _t11out="$(cd "$_t11/home/work" && HOME="$_t11/home" MUSE_SESSIONS_DIR="$_t11/home/.local/share/muse/sessions" \
+    OPENCODE_DB="$_t11/no.db" timeout 10 "$ROOT/bin/polish" agents --prompt)" && _t11rc=0 || _t11rc=$?
+  [ "$_t11rc" = 0 ] && [ "$_t11out" = "muse" ] \
+    && ok "prompt hang guard" || bad "prompt hang guard" "rc=$_t11rc out=$_t11out"
+  # Breadth probe: file-count traversal WITHOUT a token expectation (a lone
+  # match in 500 files would usually fall past `head -50`, so expecting a
+  # token here would be order-flaky by construction).
+  for _i in $(seq 1 500); do
+    mkdir -p "$_t11/home/.local/share/muse/breadth/d$_i"
+    echo "{\"payload\":{\"event\":{\"kind\":\"status\"}}}" > "$_t11/home/.local/share/muse/breadth/d$_i/session.jsonl"
+  done
+  (cd "$_t11/home/work" && HOME="$_t11/home" MUSE_SESSIONS_DIR="$_t11/home/.local/share/muse" \
+    OPENCODE_DB="$_t11/no.db" timeout 30 "$ROOT/bin/polish" agents --prompt >/dev/null 2>&1) \
+    && ok "prompt traversal breadth" || bad "prompt traversal breadth" "stalled on 500 files"
+else
+  ok "prompt hang guard (skipped: no timeout)"
+  ok "prompt traversal breadth (skipped: no timeout)"
+fi
+mkdir -p "$_t11/absbin"
+printf '#!/bin/sh\necho "COLLECTOR-INVOKED"; exit 3\n' > "$_t11/absbin/polish-tokens-collect" && chmod +x "$_t11/absbin/polish-tokens-collect"
+mkdir -p "$_t11/abshome/.usage/polish"
+printf '%s' '{"date":"2026-11-16","total_tokens":1,"total_cost_usd":0.0,"by_cli":{},"prompt":"p"}' > "$_t11/abshome/.usage/polish/daily.json"
+_absout="$(cd "$_t11" && HOME="$_t11/abshome" OPENCODE_DB="$_t11/no.db" PATH="$_t11/absbin:/usr/bin:/bin" \
+  sh -c '"$0" tokens --prompt; "$0" agents --prompt-quiet' "$ROOT/bin/polish" 2>&1)"
+echo "$_absout" | grep -q COLLECTOR-INVOKED \
+  && bad "prompt never collects" "collector invoked" || ok "prompt never collects"
+grep -q 'mode=ro' "$ROOT/bin/polish" \
+  && ok "prompt opencode read-only pinned" || bad "prompt opencode ro" "mode=ro missing"
+mkdir -p "$_t11/emptybin" "$_t11/dochome"
+_bash="$(command -v bash)"
+PATH="$_t11/emptybin" HOME="$_t11/dochome" "$_bash" "$ROOT/bin/polish" doctor >"$_t11/doctor.out" 2>&1; _docrc=$?
+[ "$_docrc" = 0 ] && grep -q -- '--- agent CLIs ---' "$_t11/doctor.out" \
+  && grep -q 'missing zsh' "$_t11/doctor.out" && grep -q 'missing claude' "$_t11/doctor.out" \
+  && grep -q 'empty.*daily.json' "$_t11/doctor.out" \
+  && ok "doctor rc=0 under missing tools" || bad "doctor shape" "rc=$_docrc"
+rm -rf "$_t11"
+
 echo "---"
 echo "pass=$pass fail=$fail (incl. installer matrix)"
 [ "$fail" = 0 ]
