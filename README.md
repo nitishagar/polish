@@ -10,6 +10,8 @@ clean theme. No framework bloat: static plugin bundle, deferred loading,
 **Status:** implemented and tested (`./tests/run.sh` green). All five agent
 integrations ship; Codex paths stay gated until the CLI is installed.
 
+![Polish session demo](docs/demo.gif)
+
 ## Why not oh-my-zsh?
 
 oh-my-zsh loads hundreds of plugins and themes synchronously at startup
