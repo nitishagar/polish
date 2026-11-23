@@ -17,7 +17,8 @@
 #   cursors.json  per-file {size,mtime,offset} cursors (+last_sig for dedupe)
 #
 # Env overrides (used by tests): POLISH_USAGE_DIR, POLISH_PRICES_FILE,
-# POLISH_PRICES_OVERRIDE, POLISH_TODAY (YYYY-MM-DD), CODEX_HOME.
+# POLISH_PRICES_OVERRIDE, POLISH_TODAY (YYYY-MM-DD), CODEX_HOME,
+# POLISH_SPINNER=always|never (default: spinner only on a tty).
 # Pricing: lib/prices.json (versioned map), deep-merged with
 # ~/.usage/polish/prices.override.json when present. bash + python3 stdlib only.
 set -u
@@ -47,6 +48,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 
 HOME = os.path.expanduser("~")
 USAGE_DIR = os.environ.get("POLISH_USAGE_DIR",
@@ -61,6 +63,47 @@ CURSOR_VERSION = 1  # bump when the cursors.json schema changes (resets all)
 
 def warn(msg):
     sys.stderr.write("polish-tokens-collect: %s\n" % msg)
+
+
+class Spinner(object):
+    """TTY-only activity indicator (braille frames + current source label).
+
+    Active only when stderr is a terminal with a capable TERM: timers, cron,
+    and pipes see exactly the old output (final summary line only).
+    """
+
+    FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+
+    def __init__(self):
+        self.label = ""
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        mode = os.environ.get("POLISH_SPINNER", "")
+        if mode == "never":
+            return
+        if (mode != "always" and (not sys.stderr.isatty()
+                                 or os.environ.get("TERM", "") == "dumb")):
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        i = 0
+        while not self._stop.wait(0.1):
+            frame = self.FRAMES[i % len(self.FRAMES)]
+            sys.stderr.write("\r%s %s" % (frame, self.label))
+            sys.stderr.flush()
+            i += 1
+
+    def stop(self):
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join()
+        sys.stderr.write("\r\x1b[K")
+        sys.stderr.flush()
 
 
 def load_json(path, default):
@@ -795,7 +838,10 @@ def main(argv):
             return 0
     summary = []
     ran = []
+    spin = Spinner()
+    spin.start()
     for cli, func in SOURCES:
+        spin.label = "collecting %s" % cli
         accum = Accum()
         saved_cursors = copy.deepcopy(FILES_CURSOR)
         try:
@@ -865,6 +911,7 @@ def main(argv):
              "prompt": "$%.2f | %s tok" % (total_cost,
                                            short_tokens(total_tokens))}
     atomic_write(os.path.join(USAGE_DIR, "daily.json"), daily)
+    spin.stop()
     sys.stderr.write("polish-tokens-collect: date=%s total=%d tokens $%.4f "
                      "sources=[%s] %s\n"
                      % (TODAY, total_tokens, total_cost, ",".join(ran),

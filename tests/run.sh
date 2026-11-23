@@ -330,6 +330,40 @@ PATH="$_t11/emptybin" HOME="$_t11/dochome" "$_bash" "$ROOT/bin/polish" doctor >"
   && ok "doctor rc=0 under missing tools" || bad "doctor shape" "rc=$_docrc"
 rm -rf "$_t11"
 
+# 12. Output formatting: color controls, plain machine paths, cx thresholds.
+_t12="$(mktemp -d)"
+mkdir -p "$_t12/home/.usage/polish"
+printf '%s' '{"date":"2026-11-16","total_tokens":190000,"total_cost_usd":1.5,"by_cli":{"claude":{"tokens":190000,"cost_usd":1.5}},"prompt":"$1.50 | 190K tok"}' > "$_t12/home/.usage/polish/daily.json"
+for _cmd in "doctor" "agents" "tokens" "mux" "theme"; do
+  HOME="$_t12/home" POLISH_COLOR=always "$ROOT/bin/polish" $_cmd 2>/dev/null | grep -q $'\e' \
+    && ok "color always: $_cmd" || bad "color always: $_cmd" "no escape codes"
+  HOME="$_t12/home" POLISH_COLOR=never "$ROOT/bin/polish" $_cmd 2>/dev/null | grep -q $'\e' \
+    && bad "color never: $_cmd" "leaked escapes" || ok "color never: $_cmd"
+  HOME="$_t12/home" NO_COLOR=1 POLISH_COLOR=always "$ROOT/bin/polish" $_cmd 2>/dev/null | grep -q $'\e' \
+    && bad "NO_COLOR: $_cmd" "leaked escapes" || ok "NO_COLOR: $_cmd"
+done
+HOME="$_t12/home" POLISH_COLOR=always "$ROOT/bin/polish" tokens --prompt 2>/dev/null | grep -q $'\e' \
+  && bad "prompt plain: tokens" "leaked escapes" || ok "prompt plain: tokens"
+mkdir -p "$_t12/proj"
+_enc="$(printf '%s' "$_t12/proj" | tr '/' '-')"
+mkdir -p "$_t12/home/.claude/projects/$_enc" && echo '{}' > "$_t12/home/.claude/projects/$_enc/s.jsonl"
+(cd "$_t12/proj" && HOME="$_t12/home" OPENCODE_DB="$_t12/no.db" POLISH_COLOR=always "$ROOT/bin/polish" agents --prompt 2>/dev/null) | grep -q '^claude$' \
+  && ok "prompt plain: agents" || bad "prompt plain: agents" "leaked escapes or wrong token"
+POLISH_COLOR=always "$ROOT/bin/polish" mux detect 2>/dev/null | grep -q $'\e' \
+  && bad "prompt plain: mux" "leaked escapes" || ok "prompt plain: mux"
+HOME="$_t12/home" POLISH_COLOR=always "$ROOT/bin/polish" theme show 2>/dev/null | grep -q $'\e' \
+  && bad "prompt plain: theme" "leaked escapes" || ok "prompt plain: theme"
+# cx threshold colors (Claude statusline convention: green<70, yellow<90, red).
+_cx() { HOME="$1" POLISH_COLOR=always POLISH_CONTEXT_WINDOW="$2" bash -c 'source "$0" && polish_context_pct' \
+  "$ROOT/plugins/polish-tokens/polish-tokens.plugin.zsh" 2>/dev/null; }
+_cx "$_t12/home" 1000000 | grep -qF '[32m' && ok "cx green <70" || bad "cx green" "wrong color"
+_cx "$_t12/home" 237500 | grep -qF '[33m' && ok "cx yellow 70-89" || bad "cx yellow" "wrong color"
+_cx "$_t12/home" 200000 | grep -qF '[31m' && ok "cx red 90+" || bad "cx red" "wrong color"
+HOME="$_t12/home" POLISH_COLOR=never bash -c 'source "$0" && polish_context_pct' \
+  "$ROOT/plugins/polish-tokens/polish-tokens.plugin.zsh" 2>/dev/null | grep -q $'\e' \
+  && bad "cx never" "leaked escapes" || ok "cx never plain"
+rm -rf "$_t12"
+
 echo "---"
 echo "pass=$pass fail=$fail (incl. installer matrix)"
 [ "$fail" = 0 ]

@@ -6,6 +6,28 @@ POLISH_DIR="${POLISH_DIR:-$HOME/.local/share/polish}"
 USAGE_DIR="${POLISH_USAGE_DIR:-$HOME/.usage/polish}"
 VERSION="0.1.0"
 
+# Color: POLISH_COLOR=auto|always|never (default auto = stdout is a tty);
+# NO_COLOR (non-empty) always wins. Machine paths (--prompt, detect, show)
+# never emit color regardless.
+_polish_color_wanted="${POLISH_COLOR:-auto}"
+if [ -n "${NO_COLOR:-}" ] || [ "$_polish_color_wanted" = "never" ]; then
+  _polish_color=0
+elif [ "$_polish_color_wanted" = "always" ]; then
+  _polish_color=1
+elif [ "$_polish_color_wanted" = "auto" ] && [ -t 1 ]; then
+  _polish_color=1
+else
+  _polish_color=0
+fi
+if [ "$_polish_color" = 1 ]; then
+  _C_BOLD=$'\e[1m'; _C_DIM=$'\e[2m'; _C_RED=$'\e[31m'
+  _C_GREEN=$'\e[32m'; _C_YELLOW=$'\e[33m'; _C_CYAN=$'\e[36m'
+  _C_RESET=$'\e[0m'
+else
+  _C_BOLD=""; _C_DIM=""; _C_RED=""; _C_GREEN=""; _C_YELLOW=""; _C_CYAN=""; _C_RESET=""
+fi
+export _POLISH_COLOR="$_polish_color"
+
 usage() {
   cat <<'EOF'
 polish: CLI for the Polish AI-first shell.
@@ -19,6 +41,9 @@ polish: CLI for the Polish AI-first shell.
   polish mux detect              print tmux|zellij|wezterm|none for this shell
   polish theme [status]          starship version + config path status
   polish theme show|path          print the resolved starship config path
+
+Color: POLISH_COLOR=auto|always|never (auto = tty only); NO_COLOR disables.
+Machine paths (--prompt, detect, show) never emit color.
 EOF
   exit "${1:-0}"
 }
@@ -26,24 +51,24 @@ EOF
 have() { command -v "$1" >/dev/null 2>&1; }
 
 cmd_doctor() {
-  echo "polish $VERSION (POLISH_DIR=$POLISH_DIR)"
-  echo "--- shell ---"
+  echo "${_C_BOLD}polish $VERSION${_C_RESET} ${_C_DIM}(POLISH_DIR=$POLISH_DIR)${_C_RESET}"
+  echo "${_C_CYAN}--- shell ---${_C_RESET}"
   for c in zsh git curl; do
-    if have "$c"; then echo "ok      $c ($("$c" --version 2>/dev/null | head -1))"; else echo "missing $c"; fi
+    if have "$c"; then echo "${_C_GREEN}ok${_C_RESET}      $c ($("$c" --version 2>/dev/null | head -1))"; else echo "${_C_RED}missing${_C_RESET} $c"; fi
   done
-  echo "--- prompt/plugins ---"
+  echo "${_C_CYAN}--- prompt/plugins ---${_C_RESET}"
   for c in starship antidote fnm tmux zellij wezterm; do
-    if have "$c"; then echo "ok      $c"; else echo "missing $c (optional)"; fi
+    if have "$c"; then echo "${_C_GREEN}ok${_C_RESET}      $c"; else echo "${_C_YELLOW}missing${_C_RESET} $c (optional)"; fi
   done
-  echo "--- agent CLIs ---"
+  echo "${_C_CYAN}--- agent CLIs ---${_C_RESET}"
   for c in claude muse codex opencode pi; do
-    if have "$c"; then echo "ok      $c ($(command -v "$c"))"; else echo "missing $c (optional)"; fi
+    if have "$c"; then echo "${_C_GREEN}ok${_C_RESET}      $c ($(command -v "$c"))"; else echo "${_C_YELLOW}missing${_C_RESET} $c (optional)"; fi
   done
-  echo "--- token cache ---"
+  echo "${_C_CYAN}--- token cache ---${_C_RESET}"
   if [ -f "$USAGE_DIR/daily.json" ]; then
-    echo "ok      $USAGE_DIR/daily.json"
+    echo "${_C_GREEN}ok${_C_RESET}      $USAGE_DIR/daily.json"
   else
-    echo "empty   $USAGE_DIR/daily.json (run: polish-tokens-collect)"
+    echo "${_C_YELLOW}empty${_C_RESET}   $USAGE_DIR/daily.json (run: polish-tokens-collect)"
   fi
 }
 
@@ -54,18 +79,18 @@ _agent_version() {
 }
 
 _agents_table() {
-  printf '%-9s %-32s %s\n' "AGENT" "VERSION" "LOCATION"
+  echo "${_C_BOLD}$(printf '%-9s %-32s %s' "AGENT" "VERSION" "LOCATION")${_C_RESET}"
   local c ver loc
   for c in claude muse codex opencode pi; do
     if have "$c"; then
       ver="$(_agent_version "$c")"
       [ -n "$ver" ] || ver="(unknown version)"
       loc="$(command -v "$c")"
-      printf '%-9s %-32s %s\n' "$c" "$ver" "$loc"
+      echo "${_C_GREEN}$(printf '%-9s' "$c")${_C_RESET} $(printf '%-32s' "$ver") ${_C_DIM}${loc}${_C_RESET}"
     elif [ "$c" = "codex" ]; then
-      printf '%-9s %-32s %s\n' "$c" "-" "gated (not installed)"
+      printf '%-9s %-32s %s\n' "$c" "-" "${_C_YELLOW}gated (not installed)${_C_RESET}"
     else
-      printf '%-9s %-32s %s\n' "$c" "-" "not installed"
+      printf '%-9s %-32s %s\n' "$c" "-" "${_C_YELLOW}not installed${_C_RESET}"
     fi
   done
 }
@@ -268,9 +293,16 @@ def money(c):
         return "$%.4f" % c
     return "$%.2f" % c
 
+color = os.environ.get("_POLISH_COLOR") == "1"
+B = "\033[1m" if color else ""
+CY = "\033[36m" if color else ""
+G = "\033[32m" if color else ""
+Y = "\033[33m" if color else ""
+X = "\033[0m" if color else ""
+
 day = d.get("date", "today")
-print("day: %s" % day)
-print("%-9s %12s %10s" % ("CLI", "TOKENS", "COST"))
+print("%sday: %s%s" % (CY, day, X))
+print("%s%-9s %12s %10s%s" % (B, "CLI", "TOKENS", "COST", X))
 total_t, total_c = 0, 0.0
 for cli in ("claude", "muse", "opencode", "pi", "codex"):
     if cli not in by_cli:
@@ -278,11 +310,14 @@ for cli in ("claude", "muse", "opencode", "pi", "codex"):
     t, c = cli_stats(by_cli[cli])
     total_t += t
     total_c += c
-    print("%-9s %12s %10s" % (cli, "%d" % t, money(c)))
+    cost_f = "%10s" % money(c)
+    if c > 0:
+        cost_f = "%s%s%s" % (Y, cost_f, X)
+    print("%s%-9s%s %12s %s" % (G, cli, X, "%d" % t, cost_f))
 if not by_cli:
     t, c = cli_stats(d)
     total_t, total_c = t, c
-print("%-9s %12s %10s" % ("TOTAL", "%d" % total_t, money(total_c)))
+print("%s%-9s %12s %10s%s" % (B, "TOTAL", "%d" % total_t, money(total_c), X))
 PYEOF
 }
 
@@ -308,7 +343,7 @@ _mux_detect() {
 }
 
 _mux_status() {
-  printf '%-9s %-18s %s\n' "MUX" "VERSION" "STATUS"
+  echo "${_C_BOLD}$(printf '%-9s %-18s %s' "MUX" "VERSION" "STATUS")${_C_RESET}"
   local m ver active
   for m in tmux zellij wezterm; do
     ver="-"
@@ -328,9 +363,14 @@ _mux_status() {
     else
       [ -n "$active" ] || active="not installed"
     fi
+    case "$active" in
+      active*) active="${_C_GREEN}${active}${_C_RESET}";;
+      installed) active="${_C_GREEN}${active}${_C_RESET}";;
+      *) active="${_C_YELLOW}${active}${_C_RESET}";;
+    esac
     printf '%-9s %-18s %s\n' "$m" "$ver" "$active"
   done
-  echo "current: $(_mux_detect)"
+  echo "current: ${_C_CYAN}$(_mux_detect)${_C_RESET}"
 }
 
 cmd_mux() {
@@ -360,9 +400,10 @@ _theme_status() {
   else
     ver="not installed"
   fi
+  if [ "$ver" = "not installed" ]; then ver="${_C_YELLOW}${ver}${_C_RESET}"; else ver="${_C_GREEN}${ver}${_C_RESET}"; fi
   echo "starship: $ver"
-  if [ -f "$cfg" ]; then echo "config:   $cfg (exists)"; else echo "config:   $cfg (missing)"; fi
-  if [ -f "$preset" ]; then echo "preset:   $preset (exists)"; else echo "preset:   $preset (missing)"; fi
+  if [ -f "$cfg" ]; then echo "config:   $cfg ${_C_GREEN}(exists)${_C_RESET}"; else echo "config:   $cfg ${_C_YELLOW}(missing)${_C_RESET}"; fi
+  if [ -f "$preset" ]; then echo "preset:   $preset ${_C_GREEN}(exists)${_C_RESET}"; else echo "preset:   $preset ${_C_RED}(missing)${_C_RESET}"; fi
 }
 
 cmd_theme() {

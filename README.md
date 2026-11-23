@@ -48,6 +48,11 @@ Requires: `zsh`, `git`, `curl`. Optional: `starship`, `antidote`, `fnm`,
 
 Docs: <https://nitishagar.github.io/polish/> (`docs/` in this repo).
 
+Terminal output is colorized on ttys (`POLISH_COLOR=auto|always|never`,
+`NO_COLOR` respected; machine paths like `--prompt` stay plain), and the
+collector shows a spinner on interactive runs (`POLISH_SPINNER=always|never`
+to force either way).
+
 ## Layout
 
 - `init.zsh` — loader (antidote bundle, plugins, starship, compinit once)

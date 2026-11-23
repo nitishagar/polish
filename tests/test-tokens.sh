@@ -408,6 +408,52 @@ assert c[db]['billed']=={'old1':100}, c[db]"
 export HOME="$fake"
 export CODEX_HOME="$fake/.codex"
 
+# ---------------- run 12: spinner gating (tty-only, forced, never) ---
+export POLISH_USAGE_DIR="$fake/.usage12"
+export POLISH_PRICES_OVERRIDE="$fake/.usage12/prices.override.json"
+mkdir -p "$fake/m12/.claude/projects/slug"
+export HOME="$fake/m12"
+export CODEX_HOME="$fake/m12/.codex-absent"
+# 200 files x 50 lines: enough scan work (~0.5s) to guarantee spinner ticks.
+for _f in $(seq 1 200); do
+  for _i in $(seq 1 50); do
+    printf '{"type":"assistant","uuid":"u%s-%s","message":{"model":"m","id":"m%s-%s","role":"assistant","usage":{"input_tokens":10,"output_tokens":5}}}\n' "$_f" "$_i" "$_f" "$_i"
+  done > "$fake/m12/.claude/projects/slug/x$_f.jsonl"
+done
+"$COLLECT" >"$fake/sp12.out" 2>"$fake/sp12.err" && ok "run12 exit 0" || bad "run12" "nonzero exit"
+grep -q $'\r' "$fake/sp12.err" \
+  && bad "spinner silent when piped" "carriage returns in stderr" || ok "spinner silent when piped"
+python3 -c "import sys; sys.exit(0 if any('\u2800' <= c <= '\u28ff' for c in open('$fake/sp12.err').read()) else 1)" \
+  && bad "spinner frames absent when piped" "braille found" || ok "spinner frames absent when piped"
+export POLISH_USAGE_DIR="$fake/.usage12b"
+POLISH_SPINNER=always "$COLLECT" >"$fake/sp12b.out" 2>"$fake/sp12b.err" && ok "spinner always exit 0" || bad "spinner always" "nonzero exit"
+python3 -c "import sys; sys.exit(0 if any('\u2800' <= c <= '\u28ff' for c in open('$fake/sp12b.err').read()) else 1)" \
+  && ok "spinner forced shows frames" || bad "spinner forced" "no braille frames"
+grep -q 'date=.*sources=\[claude\]' "$fake/sp12b.err" \
+  && ok "spinner summary intact" || bad "spinner summary" "missing"
+# pty smoke: runs clean on a real terminal (skip when script(1) missing).
+# Typescript output always goes to an explicit path (never ./typescript).
+_script_form=""
+if script -qec "true" "$fake/s-probe" >/dev/null 2>&1; then
+  _script_form=linux
+elif script -q "$fake/s-probe" true >/dev/null 2>&1; then
+  _script_form=bsd
+fi
+if [ "$_script_form" = linux ]; then
+  export POLISH_USAGE_DIR="$fake/.usage12c"
+  script -qec "$COLLECT" "$fake/sp12c.typescript" >"$fake/sp12c.out" 2>"$fake/sp12c.err" \
+    && ok "spinner pty smoke" || bad "spinner pty" "nonzero under pty"
+elif [ "$_script_form" = bsd ]; then
+  export POLISH_USAGE_DIR="$fake/.usage12c"
+  script -q "$fake/sp12c.typescript" "$COLLECT" >"$fake/sp12c.out" 2>"$fake/sp12c.err" \
+    && ok "spinner pty smoke" || bad "spinner pty" "nonzero under pty"
+else
+  ok "spinner pty smoke (skipped: no script)"
+fi
+unset POLISH_SPINNER
+export HOME="$fake"
+export CODEX_HOME="$fake/.codex"
+
 echo "---"
 echo "tokens: pass=$pass fail=$fail"
 [ "$fail" = 0 ]

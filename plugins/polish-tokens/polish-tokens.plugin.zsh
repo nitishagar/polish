@@ -30,7 +30,13 @@ polish_context_pct() {
     echo "polish_context_pct: python3 is required" >&2
     return 1
   fi
-  _POLISH_CTX_DAILY="$daily" POLISH_CONTEXT_WINDOW="${POLISH_CONTEXT_WINDOW:-200000}" python3 - <<'PYEOF'
+  local _cx_color=0 _cx_want="${POLISH_COLOR:-auto}"
+  if [ -z "${NO_COLOR:-}" ]; then
+    if [ "$_cx_want" = "always" ]; then _cx_color=1
+    elif [ "$_cx_want" = "auto" ] && [ -t 1 ]; then _cx_color=1; fi
+  fi
+  _POLISH_CTX_DAILY="$daily" POLISH_CONTEXT_WINDOW="${POLISH_CONTEXT_WINDOW:-200000}" \
+    _POLISH_CX_COLOR="$_cx_color" python3 - <<'PYEOF'
 import json
 import os
 import sys
@@ -64,7 +70,13 @@ if window <= 0:
     fail("context window is 0 (set POLISH_CONTEXT_WINDOW)")
 
 pct = 100.0 * tokens / window
-print("ctx %.0f%% (%s/%s)" % (pct, f"{tokens:,}", f"{window:,}"))
+# Threshold colors follow the Claude Code statusline convention:
+# green under 70%, yellow 70-89%, red at 90% and above.
+if os.environ.get("_POLISH_CX_COLOR") == "1":
+    code = "\033[32m" if pct < 70 else ("\033[33m" if pct < 90 else "\033[31m")
+    print("%sctx %.0f%% (%s/%s)\033[0m" % (code, pct, f"{tokens:,}", f"{window:,}"))
+else:
+    print("ctx %.0f%% (%s/%s)" % (pct, f"{tokens:,}", f"{window:,}"))
 PYEOF
 }
 alias cx='polish_context_pct'
