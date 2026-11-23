@@ -426,7 +426,7 @@ grep -q $'\r' "$fake/sp12.err" \
 python3 -c "import sys; sys.exit(0 if any('\u2800' <= c <= '\u28ff' for c in open('$fake/sp12.err').read()) else 1)" \
   && bad "spinner frames absent when piped" "braille found" || ok "spinner frames absent when piped"
 export POLISH_USAGE_DIR="$fake/.usage12b"
-POLISH_SPINNER=always "$COLLECT" >"$fake/sp12b.out" 2>"$fake/sp12b.err" && ok "spinner always exit 0" || bad "spinner always" "nonzero exit"
+POLISH_SPINNER=always POLISH_SPINNER_TICK_MS=5 "$COLLECT" >"$fake/sp12b.out" 2>"$fake/sp12b.err" && ok "spinner always exit 0" || bad "spinner always" "nonzero exit"
 python3 -c "import sys; sys.exit(0 if any('\u2800' <= c <= '\u28ff' for c in open('$fake/sp12b.err').read()) else 1)" \
   && ok "spinner forced shows frames" || bad "spinner forced" "no braille frames"
 grep -q 'date=.*sources=\[claude\]' "$fake/sp12b.err" \

@@ -19,6 +19,7 @@
 # Env overrides (used by tests): POLISH_USAGE_DIR, POLISH_PRICES_FILE,
 # POLISH_PRICES_OVERRIDE, POLISH_TODAY (YYYY-MM-DD), CODEX_HOME,
 # POLISH_SPINNER=always|never (default: spinner only on a tty).
+# POLISH_SPINNER_TICK_MS sets the frame interval (default 100; tests use 5).
 # Pricing: lib/prices.json (versioned map), deep-merged with
 # ~/.usage/polish/prices.override.json when present. bash + python3 stdlib only.
 set -u
@@ -78,6 +79,11 @@ class Spinner(object):
         self.label = ""
         self._stop = threading.Event()
         self._thread = None
+        try:
+            self._tick = max(0.005, int(os.environ.get(
+                "POLISH_SPINNER_TICK_MS", "100")) / 1000.0)
+        except ValueError:
+            self._tick = 0.1
 
     def start(self):
         mode = os.environ.get("POLISH_SPINNER", "")
@@ -91,7 +97,7 @@ class Spinner(object):
 
     def _run(self):
         i = 0
-        while not self._stop.wait(0.1):
+        while not self._stop.wait(self._tick):
             frame = self.FRAMES[i % len(self.FRAMES)]
             sys.stderr.write("\r%s %s" % (frame, self.label))
             sys.stderr.flush()
